@@ -1,0 +1,12 @@
+CoFisher 完整依赖包（Windows x64）
+
+1. 解压整个压缩包，保持目录结构。
+2. 双击 CoFisher.exe。
+3. 如果提示缺少 WebView2 或界面无法创建，双击 dependencies 文件夹中的
+   MicrosoftEdgeWebView2RuntimeInstallerX64.exe，安装完成后重新启动 CoFisher.exe。
+   这是微软签名的完整离线安装包，不需要联网下载运行环境。
+
+界面与角色资源已内置 EXE；steam_api64.dll 和 steam_appid.txt 须与 EXE 放在一起。
+Steam 联机仍需自行安装并登录 Steam 客户端；局域网/中转服务器联机无需 Steam。
+不需要安装 Rust、Node.js 或开发工具。
+本包面向 Windows 10/11 x64，Windows 系统组件不随包复制。

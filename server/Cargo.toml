@@ -1,0 +1,19 @@
+[package]
+name = "cofisher-server"
+version = "2.0.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "cofisher-relay"
+path = "src/bin/cofisher-relay.rs"
+
+[dependencies]
+futures-util = "0.3.34"
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+socket2 = "0.6.5"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+tokio-tungstenite = "0.30.0"

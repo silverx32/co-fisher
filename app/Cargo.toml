@@ -1,0 +1,31 @@
+[package]
+name = "co-fisher"
+version = "2.0.0"
+edition = "2021"
+
+[[bin]]
+name = "CoFisher"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = "2.7.4"
+
+[dependencies]
+cofisher-server = { version = "2.0.0", path = "../server" }
+futures-util = "0.3.34"
+getrandom = "0.4.3"
+if-addrs = "0.15.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+steamworks = "0.13.1"
+tauri = { version = "2.12.5", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2.5.5"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
+tokio-tungstenite = "0.30.0"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader"] }
+winreg = "0.56.0"
+
+[features]
+# Serve the bundled ui/ from inside the exe (standard Tauri setup for builds without the tauri CLI).
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

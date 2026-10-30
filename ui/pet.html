@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>摸鱼搭子</title>
+<link rel="stylesheet" href="pet.css">
+</head>
+<body>
+<div id="root">
+  <div id="panel" class="hit hidden">
+    <div class="tabs">
+      <button data-tab="room" class="active">房间</button>
+      <button data-tab="chars">角色</button>
+      <button data-tab="shop">道具</button>
+      <button id="closePanel" title="收起">✕</button>
+    </div>
+
+    <section data-pane="room">
+      <div class="status"><span id="netDot" class="dot"></span><span id="netText">未连接</span></div>
+      <div id="steamBar" class="steam-bar">
+        <span id="steamText">Steam 检测中…</span>
+        <button id="steamRetryBtn" class="mini hidden">重试</button>
+      </div>
+      <label>我的昵称 <input id="nameInput" maxlength="12"></label>
+
+      <div id="hostBox" class="box">
+        <h4>我当房主</h4>
+        <div class="row">
+          <label>端口 <input id="hostPort" type="number" min="1024" max="65535" class="short"></label>
+          <label>密码 <input id="hostPwd" placeholder="可不填" class="short"></label>
+        </div>
+        <button id="hostBtn" class="primary">创建房间</button>
+        <div id="hostInfo" class="hidden">
+          <p>把下面任意一个地址发给朋友（Steam 跨网免公网）：</p>
+          <div id="hostAddrs"></div>
+        </div>
+      </div>
+
+      <div id="joinBox" class="box">
+        <div class="box-head">
+          <h4>加入房间</h4>
+          <button id="steamRefreshBtn" class="mini hidden">刷新 Steam 房间</button>
+        </div>
+        <div id="steamRoomList" class="hidden"></div>
+        <label>地址 <input id="joinAddr" placeholder="steam:ID / 局域网IP / 中转服务器"></label>
+        <div class="row">
+          <label>房间号 <input id="joinRoom" placeholder="中转服务器用" class="short"></label>
+          <label>密码 <input id="joinPwd" placeholder="没有就空着" class="short"></label>
+        </div>
+        <button id="joinBtn" class="primary">加入</button>
+      </div>
+
+      <button id="leaveBtn" class="hidden danger">断开 / 关闭房间</button>
+      <p class="tip">不在一个局域网？推荐用 Steam 联机（双方打开 Steam 即可，测试 AppID 480），也可用中转服务器或 IPv6。</p>
+      <button id="quitBtn" class="link">退出程序</button>
+    </section>
+
+    <section data-pane="chars" class="hidden">
+      <div id="charGrid"></div>
+      <div class="box">
+        <h4>自定义皮肤</h4>
+        <p class="tip">选好【待机】和【敲键盘】两张图（png/gif/jpg/webp，单张 &lt; 300KB）就会自动换上，好友也能看到。</p>
+        <div class="row">
+          <button id="skinIdleBtn">待机图…</button>
+          <button id="skinTypingBtn">敲键盘图…</button>
+          <button id="skinClear">恢复内置</button>
+        </div>
+        <input id="skinIdle" type="file" accept="image/png,image/gif,image/jpeg,image/webp" hidden>
+        <input id="skinTyping" type="file" accept="image/png,image/gif,image/jpeg,image/webp" hidden>
+      </div>
+    </section>
+
+    <section data-pane="shop" class="hidden">
+      <div class="balance">可用点数 <b id="shopCount">0</b><span id="shopTotal"></span></div>
+      <div id="shopList"></div>
+      <p class="tip">道具可以先囤着。好友小人下面的道具按钮，有存货时点一下就扔过去糊 TA 一脸。</p>
+    </section>
+  </div>
+
+  <div id="log"></div>
+  <!-- Bottom row: friends line up to the left of me, in join order. -->
+  <div id="stage">
+    <div id="friends"></div>
+    <div id="me">
+      <div id="bubble" class="hit">⌨ <b id="myCount">0</b></div>
+      <img id="myImg" class="hit" draggable="false" alt="">
+      <div id="myName"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+</div>
+<script src="api.js"></script>
+<script src="pet.js"></script>
+</body>
+</html>

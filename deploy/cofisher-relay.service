@@ -1,0 +1,19 @@
+[Unit]
+Description=Co-Fisher relay (摸鱼搭子中转服务器)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Edit the password (or remove --password) to taste, then: systemctl daemon-reload && systemctl restart cofisher-relay
+ExecStart=/usr/local/bin/cofisher-relay --port 23333 --password CHANGE_ME
+Restart=always
+RestartSec=3
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

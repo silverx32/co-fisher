@@ -1,0 +1,31 @@
+Co-Fisher 宝塔 Docker 部署
+
+1. 将 cofisher-docker.zip 上传到宝塔文件目录 /www/cofisher-relay 并解压。
+   确认 Dockerfile、compose.yaml、cofisher-relay 在同一目录。
+2. 将 .env.example 复制为 .env，填写独立连接密码 RELAY_PASSWORD。
+   建议使用英文字母和数字。不要填写宝塔登录密码。
+3. 在宝塔终端执行：
+   cd /www/cofisher-relay
+   docker compose up -d --build
+4. 查看运行状态和启动日志：
+   docker compose ps
+   docker compose logs --tail=50
+   出现 listening on 23333 和 relay ready 表示程序已启动。
+5. 在宝塔安全页面、腾讯云安全组（轻量服务器则为防火墙）放行 TCP 15880。
+   对外端口15880映射到容器内部23333，启动日志仍显示23333。
+   不需要开放 UDP、容器管理端口或其他端口。
+6. 客户端填写 106.55.151.111:15880，填写相同房间号和步骤2的连接密码。
+   使用两个外网客户端实际加入同一房间验证联机。
+
+维护（在上述目录执行）：
+   查看日志：docker compose logs --tail=100 -f
+   重启：docker compose restart
+   停止：docker compose stop
+   更新：替换 cofisher-relay 后执行 docker compose up -d --build
+   改密码：修改 .env 后执行 docker compose up -d
+
+容器限制：最多100个房间、128MB内存、0.5核CPU；可按实际负载调整。
+服务无需数据库和存储卷。房间和在线连接保存在内存中，重启后需重新连接。
+部署包中的程序为项目 dist/relay/cofisher-relay 的 Linux x86_64 静态版本。
+部署前需确认服务器为 x86_64：在终端运行 uname -m。
+本包已核对二进制架构，但尚未在服务器构建、启动或进行外网联机验证。

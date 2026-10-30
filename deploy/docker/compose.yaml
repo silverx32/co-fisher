@@ -1,0 +1,23 @@
+services:
+  relay:
+    build: .
+    image: cofisher-relay:local
+    container_name: cofisher-relay
+    restart: unless-stopped
+    init: true
+    command: ["--host", "0.0.0.0", "--port", "23333", "--password", "${RELAY_PASSWORD:?请先在 .env 中设置 RELAY_PASSWORD}", "--max-rooms", "100"]
+    ports:
+      - "15880:23333/tcp"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    cpus: 0.50
+    pids_limit: 64
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

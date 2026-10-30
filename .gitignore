@@ -1,0 +1,22 @@
+# Build outputs and downloaded dependencies
+/target/
+/dist/
+/node_modules/
+/app/gen/
+/redistributables/*.exe
+
+# Local editor and OS files
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+*.log
+
+# Local credentials; keep the documented template
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
