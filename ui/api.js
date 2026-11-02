@@ -20,7 +20,7 @@
     throwItem: (item, target) => invoke('throw_item', { item, target }),
     openChest: () => invoke('open_chest'),
     mergeDecos: (rarity, confirm) => invoke('merge_decos', { rarity, confirm }),
-    equipDeco: (id) => invoke('equip_deco', { id }),
+    equipDeco: (slot, id) => invoke('equip_deco', { slot, id }),
     checkUpdate: () => invoke('check_for_update'),
     applyUpdate: () => invoke('apply_update'),
     hitRects: (rects) => invoke('hit_rects', { rects }),

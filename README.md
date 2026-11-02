@@ -4,7 +4,7 @@
 
 - 单个 exe（约 10MB 以内），用 Windows 10/11 自带的 WebView2 显示界面
 - 6 个 Q 版角色（Claude、Codex、豆包、Gemini、DeepSeek、Kimi），每个 1 张待机 + 3 张打字图：每敲一下键盘随机闪一张打字图，随即回到待机；也可以上传自定义形象
-- 100 个装扮（5 种稀有度），所有角色通用：每 30 分钟可以花 3000 点开一次宝箱，同稀有度的 10 个合成 1 个更高稀有度的
+- 140 个装扮（5 种稀有度），分头饰（帽子、面具…）/ 宠物（可爱动物…）/ 特效（翅膀、光环…）三栏，每栏穿一件，所有角色通用：每 30 分钟可以花 3000 点开一次宝箱，同稀有度的 10 个合成 1 个更高稀有度的
 - 内置更新：启动后自动检查 GitHub Releases，有新版一键下载替换并重启
 - 每个房间最多 16 人；联机方式：**Steam P2P 联机（测试 AppID 480 Spacewar，免公网/免服务器）** / 局域网房主 / 云端中转服务器 / IPv6 直连
 
@@ -63,7 +63,7 @@ App 会查询 `https://api.github.com/repos/silverx32/co-fisher/releases/latest`
 
 角色资源：图集放在 `art/atlas/{idle,typing1,typing2,typing3}.png`（3×2 网格），`npm run slice` 切成 `ui/assets/characters/<id>/*.png`；`npm run icon` 重新生成程序图标。新增/调整角色时同步修改 `server/src/lib.rs` 的 `CHARACTERS` 和 `app/src/main.rs` 的 `CHARACTER_INFO`。
 
-装扮：`tools/gen-decos.js` 用代码画出全部装扮（336×330 透明 PNG，覆盖角色图片框左右各加宽 20%、向上加高 25% 的区域，`layer` 为 `back` 的画在角色后面）。稀有度名称、开箱概率、价格和冷却在 `app/src/decos.rs`。
+装扮：`tools/gen-decos.js` 用代码画出全部装扮（336×330 透明 PNG，覆盖角色图片框左右各加宽 20%、向上加高 25% 的区域，`layer` 为 `back` 的画在角色后面；`slot` 为 head / pet / fx，每栏同时只能穿一件）。新增装扮只往后加，不要改已有的 id（玩家存档里存的是 id）。稀有度名称、开箱概率、价格和冷却在 `app/src/decos.rs`。
 
 目录：
 

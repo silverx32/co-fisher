@@ -159,8 +159,14 @@ button.mini { padding: 1px 7px; font-size: 11px; border-radius: 6px; }
 #decoReveal img { width: 64px; height: 64px; object-fit: contain; }
 #decoReveal .new { background: #ff6b6b; color: #fff; font-size: 10px; border-radius: 6px; padding: 0 5px; margin-left: 4px; }
 @keyframes reveal { 0% { transform: scale(.6); opacity: 0; } 70% { transform: scale(1.06); } 100% { transform: none; opacity: 1; } }
-.deco-cur { display: flex; align-items: center; gap: 6px; margin: 4px 2px 6px; }
-.deco-cur button { margin-left: auto; }
+.worn-row, .merge-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 12px; }
+.worn-row .worn-label { color: #888; width: 34px; }
+.worn-row button, .merge-row button { margin-left: auto; }
+.merge-row small { color: #999; }
+#decoMerge h4 { font-weight: normal; color: #888; font-size: 11px; }
+.slot-tabs { display: flex; gap: 4px; margin: 8px 0 2px; }
+.slot-tabs button { flex: 1; border-radius: 8px; padding: 3px 0; }
+.slot-tabs button.active { background: #5b8cff; border-color: #5b8cff; color: #fff; }
 .deco-sec { margin: 8px 0 4px; }
 .deco-head { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-bottom: 4px; }
 .deco-head b { font-size: 13px; }

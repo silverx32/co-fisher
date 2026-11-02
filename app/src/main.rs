@@ -105,13 +105,17 @@ impl Inner {
     fn touch(&mut self) {
         self.dirty = true;
     }
+    /// Worn cosmetic ids, head first.
+    fn worn(&self) -> Vec<String> {
+        decos::SLOTS.iter().filter_map(|(slot, _)| self.config.worn.get(*slot).cloned()).collect()
+    }
     fn deco_state(&self) -> Value {
         let c = &self.config;
         json!({
             "owned": c.decos,
-            "equipped": c.deco,
+            "worn": c.worn,
             "nextChestAt": c.last_chest_ms + decos::CHEST_COOLDOWN_MS,
-            "stats": decos::stats(&c.decos, &c.deco),
+            "stats": decos::stats(&c.decos, &self.worn()),
         })
     }
     /// Sends our status to the room on the next tick instead of waiting for the throttle.
@@ -125,11 +129,12 @@ fn hello_for(app: &AppHandle) -> Value {
     let st = app.state::<Arc<AppState>>();
     let i = st.inner.lock().unwrap();
     let c = &i.config;
-    net::hello_payload(&c.id, &c.secret, &c.name, &c.character, &c.deco, i.skin.as_ref(), c.count, c.inv.to_json())
+    net::hello_payload(&c.id, &c.secret, &c.name, &c.character, &i.worn(), i.skin.as_ref(), c.count, c.inv.to_json())
 }
 
 fn profile_msg(i: &Inner, with_skin: bool) -> Value {
-    let mut m = json!({ "t": "profile", "name": i.config.name, "char": i.config.character, "deco": i.config.deco });
+    let worn = i.worn();
+    let mut m = json!({ "t": "profile", "name": i.config.name, "char": i.config.character, "deco": worn.first(), "decos": worn });
     if with_skin {
         m["skin"] = i.skin.clone().unwrap_or(Value::Null);
     }
@@ -431,26 +436,31 @@ fn merge_decos(state: St<'_>, rarity: usize, confirm: bool) -> Value {
         return json!({ "ok": false, "error": "最高稀有度不能再合成了" });
     }
     let mut i = state.inner.lock().unwrap();
-    let equipped = i.config.deco.clone();
-    let Some((_, lose)) = decos::merge_plan(&i.config.decos, rarity, &equipped) else {
+    let worn = i.worn();
+    let Some((_, lose)) = decos::merge_plan(&i.config.decos, rarity, &worn) else {
         return json!({ "ok": false, "error": format!("需要 {} 个同稀有度的装扮", decos::MERGE_COUNT) });
     };
     if lose > 0 && !confirm {
         return json!({ "ok": false, "confirm": true, "lose": lose });
     }
-    let got = decos::merge(&mut i.config.decos, rarity, &equipped).expect("planned above");
+    let got = decos::merge(&mut i.config.decos, rarity, &worn).expect("planned above");
     let is_new = i.config.decos.get(&got.id) == Some(&1);
     i.touch();
     json!({ "ok": true, "item": got.id, "isNew": is_new, "decoState": i.deco_state() })
 }
 
 #[tauri::command]
-fn equip_deco(state: St<'_>, id: String) -> Value {
+/// Wears `id` in its slot, or takes off whatever is in `slot` when `id` is empty.
+fn equip_deco(state: St<'_>, slot: String, id: String) -> Value {
     let mut i = state.inner.lock().unwrap();
-    if !id.is_empty() && (decos::get(&id).is_none() || !i.config.decos.contains_key(&id)) {
-        return json!({ "ok": false, "error": "还没有这个装扮" });
+    if id.is_empty() {
+        i.config.worn.remove(&slot);
+    } else {
+        let Some(d) = decos::get(&id).filter(|_| i.config.decos.contains_key(&id)) else {
+            return json!({ "ok": false, "error": "还没有这个装扮" });
+        };
+        i.config.worn.insert(d.slot.clone(), id);
     }
-    i.config.deco = id;
     i.touch();
     state.net.send(&profile_msg(&i, false));
     json!({ "ok": true, "decoState": i.deco_state() })
@@ -648,13 +658,29 @@ fn clean_player(p: &Value) -> Option<Value> {
         "id": id,
         "name": p["name"].as_str().unwrap_or("").chars().take(NAME_MAX).collect::<String>(),
         "char": character,
-        "deco": p["deco"].as_str().filter(|d| decos::get(d).is_some()).unwrap_or(""),
+        "decos": worn_by(p),
         "skinRev": non_neg(&p["skinRev"]),
         "count": non_neg(&p["count"]),
         "typing": p["typing"].as_bool().unwrap_or(false),
         "chest": p["chest"].as_bool().unwrap_or(false),
         "inv": inv,
     }))
+}
+
+/// A player's worn cosmetics: known ids only, at most one per slot. v2.1 clients / relays only
+/// send a single "deco".
+fn worn_by(p: &Value) -> Vec<String> {
+    let listed: Vec<&Value> = match p["decos"].as_array() {
+        Some(list) => list.iter().collect(),
+        None => vec![&p["deco"]],
+    };
+    let mut worn: Vec<&decos::Deco> = Vec::new();
+    for d in listed.into_iter().filter_map(|v| v.as_str()).filter_map(decos::get) {
+        if !worn.iter().any(|w| w.slot == d.slot) {
+            worn.push(d);
+        }
+    }
+    worn.into_iter().map(|d| d.id.clone()).collect()
 }
 
 fn refund_pending(app: &AppHandle, state: &AppState) {

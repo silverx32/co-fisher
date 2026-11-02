@@ -28,8 +28,9 @@ pub const ITEM_NAMES: [&str; 3] = ["番茄", "墨鱼汁", "屎"];
 // Built-in characters; art in ui/assets/characters/<id>/ (sliced by tools/slice-atlas.js).
 pub const CHARACTERS: [&str; 6] = ["claude", "codex", "doubao", "gemini", "deepseek", "kimi"];
 pub const NAME_MAX: usize = 12;
-/// Equipped cosmetic id (art ships with the app; the server only checks the format).
+/// Worn cosmetic ids (art ships with the app; the server only checks the format).
 pub const DECO_ID_MAX: usize = 32;
+const WORN_MAX: usize = 4; // one per slot, with room for a future slot
 pub const MAX_PAYLOAD: usize = 1024 * 1024; // custom skins travel as data URLs
 pub const SKIN_IMAGE_MAX: usize = 400 * 1024; // per image data URL length
 
@@ -103,7 +104,7 @@ struct Player {
     character: String,
     skin: Option<Value>,
     skin_rev: u64,
-    deco: String,
+    decos: Vec<String>,
     /// Whether their cosmetics chest can be opened right now (shown to the room; the timer stays private).
     chest: bool,
     count: u64,
@@ -186,7 +187,7 @@ impl Room {
                 .map(|(id, p)| {
                     json!({
                         "id": id, "name": p.name, "char": p.character,
-                        "skinRev": if p.skin.is_some() { p.skin_rev } else { 0 }, "deco": p.deco, "chest": p.chest,
+                        "skinRev": if p.skin.is_some() { p.skin_rev } else { 0 }, "deco": p.decos.first().map_or("", |d| d.as_str()), "decos": p.decos, "chest": p.chest,
                         "count": p.count, "typing": p.typing, "inv": inv_json(&p.inv),
                     })
                 })
@@ -217,6 +218,21 @@ pub fn clean_deco(v: &Value) -> String {
         Some(s) if s.len() <= DECO_ID_MAX && s.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-') => s.to_string(),
         _ => String::new(),
     }
+}
+
+/// Worn cosmetics from `decos` (a list), or v2.1's single `deco`.
+fn clean_worn(msg: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let listed: Vec<&Value> = match msg["decos"].as_array() {
+        Some(list) => list.iter().collect(),
+        None => vec![&msg["deco"]],
+    };
+    for d in listed.into_iter().map(clean_deco).filter(|d| !d.is_empty()) {
+        if out.len() < WORN_MAX && !out.contains(&d) {
+            out.push(d);
+        }
+    }
+    out
 }
 
 fn valid_image_data_url(s: &str) -> bool {
@@ -552,7 +568,7 @@ fn on_hello(
         character: msg["char"].as_str().filter(|c| CHARACTERS.contains(c)).unwrap_or(CHARACTERS[0]).to_string(),
         skin_rev: if skin.is_some() { 1 } else { 0 },
         skin,
-        deco: clean_deco(&msg["deco"]),
+        decos: clean_worn(msg),
         chest: false,
         count,
         typing: false,
@@ -612,8 +628,8 @@ fn on_message(shared: &Shared, conn: u64, code: &str, id: &str, msg: &Value) {
             if let Some(c) = msg["char"].as_str().filter(|c| CHARACTERS.contains(c)) {
                 p.character = c.to_string();
             }
-            if let Some(d) = msg.get("deco") {
-                p.deco = clean_deco(d);
+            if msg.get("decos").is_some() || msg.get("deco").is_some() {
+                p.decos = clean_worn(msg);
             }
             if let Some(s) = msg.get("skin") {
                 let skin = clean_skin(s);
@@ -703,6 +719,9 @@ mod tests {
         assert_eq!(clean_deco(&json!("party-red")), "party-red");
         assert_eq!(clean_deco(&json!("Bad Id")), "");
         assert_eq!(clean_deco(&json!(3)), "");
+        assert_eq!(clean_worn(&json!({ "decos": ["a", "b", "a", "Bad", "c", "d", "e"] })), ["a", "b", "c", "d"]);
+        assert_eq!(clean_worn(&json!({ "deco": "party-red" })), ["party-red"]);
+        assert!(clean_worn(&json!({ "deco": "" })).is_empty());
         assert!(valid_id("player-0001") && !valid_id("short") && !valid_id("bad id with spaces"));
     }
 }

@@ -65,8 +65,10 @@ pub struct Config {
     pub pet_pos_phys: Option<(i32, i32)>,
     /// Cosmetics owned: id -> copies.
     pub decos: BTreeMap<String, u64>,
-    /// Equipped cosmetic id, "" for none.
-    #[serde(deserialize_with = "null_as_default")]
+    /// Worn cosmetics: slot ("head" / "pet" / "fx") -> id.
+    pub worn: BTreeMap<String, String>,
+    /// v2.1 wore a single cosmetic; read once and moved into `worn`.
+    #[serde(deserialize_with = "null_as_default", skip_serializing)]
     pub deco: String,
     /// When the last chest was opened (Unix ms).
     pub last_chest_ms: u64,
@@ -147,9 +149,11 @@ pub fn load() -> Config {
     }
     // Unknown ids (e.g. from a newer version) are kept in the collection but can't be worn.
     c.decos.retain(|_, n| *n > 0);
-    if !c.decos.contains_key(&c.deco) || crate::decos::get(&c.deco).is_none() {
-        c.deco.clear();
+    if let Some(d) = crate::decos::get(&std::mem::take(&mut c.deco)) {
+        c.worn.entry(d.slot.clone()).or_insert_with(|| d.id.clone());
     }
+    let owned = c.decos.clone();
+    c.worn.retain(|slot, id| owned.contains_key(id) && crate::decos::get(id).is_some_and(|d| &d.slot == slot));
     if c.host_port < 1024 {
         c.host_port = DEFAULT_PORT;
     }
@@ -186,5 +190,24 @@ pub fn save_skin(skin: Option<&Value>) {
         None => {
             let _ = fs::remove_file(path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn moves_the_single_v2_1_cosmetic_into_its_slot() {
+        let dir = std::env::temp_dir().join(format!("cofisher-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = r#"{ "decos": { "witch-green": 1, "pet-fox": 2 }, "deco": "witch-green", "worn": { "pet": "pet-fox", "fx": "not-owned" } }"#;
+        std::fs::write(dir.join("config.json"), cfg).unwrap();
+        // The only test that touches the data dir.
+        unsafe { std::env::set_var("COFISHER_DATA_DIR", &dir) };
+        let c = super::load();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(c.worn.get("head").map(String::as_str), Some("witch-green"));
+        assert_eq!(c.worn.get("pet").map(String::as_str), Some("pet-fox"));
+        assert!(!c.worn.contains_key("fx"));
+        assert!(!serde_json::to_string(&c).unwrap().contains("\"deco\""));
     }
 }

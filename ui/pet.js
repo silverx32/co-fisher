@@ -23,7 +23,7 @@ const S = {
   steamRooms: [],
   steamLoading: false,
   decos: { items: [], rarities: [] }, // catalogue
-  decoState: { owned: {}, equipped: '', nextChestAt: 0, stats: [] },
+  decoState: { owned: {}, worn: {}, nextChestAt: 0, stats: [] },
   version: '',
   update: { state: 'idle' },
 };
@@ -103,10 +103,17 @@ function setDeco(img, id) {
   img.className = `deco ${d.layer} r${d.rarity}`;
 }
 
+// An avatar has one <img class="deco"> per slot; effects go first, headwear last (on top).
+const SLOT_ORDER = ['fx', 'pet', 'head'];
+function setWorn(avatar, ids) {
+  const bySlot = SLOT_ORDER.map((s) => ids.find((id) => decoById.get(id)?.slot === s));
+  avatar.querySelectorAll('img.deco').forEach((img, k) => setDeco(img, bySlot[k]));
+}
+
 // ---------------------------------------------------------------- me
 function renderMe() {
   setSrc($('#myImg'), srcFor(S.me.char, S.me.skin, myTap.frame));
-  setDeco($('#myDeco'), S.decoState.equipped);
+  setWorn($('#myAvatar'), Object.values(S.decoState.worn || {}));
   $('#myName').textContent = S.me.name;
 }
 
@@ -154,7 +161,7 @@ function renderFriends() {
       const avatar = el('div', 'avatar');
       const img = el('img', 'fimg');
       img.draggable = false;
-      avatar.append(el('img', 'deco hidden'), img);
+      avatar.append(el('img', 'deco hidden'), el('img', 'deco hidden'), el('img', 'deco hidden'), img);
       const chest = el('span', 'fchest hidden', '🎁');
       chest.title = 'TA 的宝箱可以开了';
       node.append(el('span', 'ftyping', '⌨'), chest, avatar, el('div', 'fcount'), el('div', 'fname'), actions);
@@ -165,9 +172,9 @@ function renderFriends() {
     node.querySelector('.fcount').textContent = `⌨ ${p.count}`;
     node.querySelector('.fchest').classList.toggle('hidden', !p.chest);
     node.querySelector('.fname').textContent = p.name;
-    const deco = decoById.get(p.deco);
-    node.title = `${p.name}\n点数 ${p.count}\n🍅${p.inv?.tomato ?? 0} 🦑${p.inv?.ink ?? 0} 💩${p.inv?.poop ?? 0}${deco ? `\n装扮：${deco.name}` : ''}`;
-    setDeco(node.querySelector('.deco'), p.deco);
+    const worn = (p.decos || []).map((id) => decoById.get(id)?.name).filter(Boolean).join('、');
+    node.title = `${p.name}\n点数 ${p.count}\n🍅${p.inv?.tomato ?? 0} 🦑${p.inv?.ink ?? 0} 💩${p.inv?.poop ?? 0}${worn ? `\n装扮：${worn}` : ''}`;
+    setWorn(node.querySelector('.avatar'), p.decos || []);
     let ft = friendTaps.get(p.id);
     if (!ft) {
       const img = node.querySelector('.fimg');
@@ -523,62 +530,98 @@ function renderShop() {
 }
 
 // ---------------------------------------------------------------- cosmetics
-const decoTiles = new Map(); // id -> { tile, count }
-const decoSections = []; // per rarity: { head, merge, confirm }
+const decoTiles = new Map(); // id -> { tile, count, d }
+const decoSections = []; // merge row per rarity (none for the top one): { info, merge, confirm, timer }
+const wornRows = new Map(); // slot -> { name, off }
+const slotViews = new Map(); // slot -> { tab, pane, groups: [{ items, info }] }
+let decoSlot = 'head'; // which slot's collection is shown
 
 function buildDecos() {
-  const list = $('#decoList');
+  for (const s of S.decos.slots) {
+    const row = el('div', 'worn-row');
+    const name = el('b');
+    const off = el('button', 'mini', '卸下');
+    off.addEventListener('click', () => wear(s.id, ''));
+    row.append(el('span', 'worn-label', s.name), name, off);
+    $('#decoWorn').append(row);
+    wornRows.set(s.id, { name, off });
+  }
   S.decos.rarities.forEach((r, ri) => {
-    const sec = el('div', 'deco-sec');
-    const head = el('div', 'deco-head');
+    const next = S.decos.rarities[ri + 1];
+    if (!next) return;
+    const row = el('div', 'merge-row');
     const name = el('b', null, r.name);
     name.style.color = r.color;
     const info = el('small');
-    head.append(name, info);
-    const next = S.decos.rarities[ri + 1];
-    const merge = next ? el('button', 'mini', `合成 → ${next.name}`) : null;
-    if (merge) {
-      merge.addEventListener('click', () => mergeDecos(ri));
-      head.append(merge);
-    }
-    const grid = el('div', 'deco-grid');
-    for (const d of S.decos.items.filter((x) => x.rarity === ri)) {
-      const tile = el('div', 'tile');
-      const img = decoIcon(d);
-      img.loading = 'lazy';
-      const count = el('small');
-      tile.append(img, count);
-      tile.addEventListener('click', () => equipDeco(d.id));
-      grid.append(tile);
-      decoTiles.set(d.id, { tile, count, d });
-    }
-    sec.append(head, grid);
-    list.append(sec);
-    decoSections.push({ info, merge, confirm: false, timer: null });
+    const merge = el('button', 'mini', `合成 → ${next.name}`);
+    merge.addEventListener('click', () => mergeDecos(ri));
+    row.append(name, info, merge);
+    $('#decoMerge').append(row);
+    decoSections[ri] = { info, merge, confirm: false, timer: null };
   });
+  for (const s of S.decos.slots) {
+    const tab = el('button', null, s.name);
+    tab.addEventListener('click', () => { decoSlot = s.id; renderDecos(); });
+    $('#decoSlotTabs').append(tab);
+    const pane = el('div');
+    const groups = [];
+    S.decos.rarities.forEach((r, ri) => {
+      const items = S.decos.items.filter((x) => x.slot === s.id && x.rarity === ri);
+      if (!items.length) return;
+      const head = el('div', 'deco-head');
+      const name = el('b', null, r.name);
+      name.style.color = r.color;
+      const info = el('small');
+      head.append(name, info);
+      const grid = el('div', 'deco-grid');
+      for (const d of items) {
+        const tile = el('div', 'tile');
+        const img = decoIcon(d);
+        img.loading = 'lazy';
+        const count = el('small');
+        tile.append(img, count);
+        tile.addEventListener('click', () => toggleWear(d.id));
+        grid.append(tile);
+        decoTiles.set(d.id, { tile, count, d });
+      }
+      pane.append(head, grid);
+      groups.push({ items, info });
+    });
+    $('#decoList').append(pane);
+    slotViews.set(s.id, { tab, pane, groups });
+  }
 }
 
 function renderDecos() {
   const ds = S.decoState;
+  const worn = ds.worn || {};
   for (const [id, { tile, count, d }] of decoTiles) {
     const n = ds.owned[id] || 0;
+    const on = worn[d.slot] === id;
     tile.classList.toggle('owned', n > 0);
-    tile.classList.toggle('equipped', ds.equipped === id);
-    tile.title = n > 0 ? `${d.name}（${S.decos.rarities[d.rarity].name}）× ${n}${ds.equipped === id ? '\n点击卸下' : '\n点击穿上'}` : '？？？';
+    tile.classList.toggle('equipped', on);
+    tile.title = n > 0 ? `${d.name}（${S.decos.rarities[d.rarity].name}）× ${n}${on ? '\n点击卸下' : '\n点击穿上'}` : '？？？';
     count.textContent = n > 1 ? `×${n}` : '';
   }
   decoSections.forEach((sec, ri) => {
     const st = ds.stats[ri] || {};
-    sec.info.textContent = `${st.kinds || 0}/${st.total || 0} 种 · 共 ${st.owned || 0} 个`;
-    if (sec.merge && !sec.confirm) {
+    sec.info.textContent = `共 ${st.owned || 0} 个`;
+    if (!sec.confirm) {
       sec.merge.disabled = !st.canMerge;
       sec.merge.title = st.lose ? `会用掉 ${st.lose} 个只有一件的装扮` : '';
     }
   });
-  const cur = decoById.get(ds.equipped);
-  $('#decoCur').textContent = cur ? cur.name : '无';
-  $('#decoCur').style.color = cur ? S.decos.rarities[cur.rarity].color : '';
-  $('#decoOff').classList.toggle('hidden', !cur);
+  for (const [slot, { name, off }] of wornRows) {
+    const d = decoById.get(worn[slot]);
+    name.textContent = d ? d.name : '无';
+    name.style.color = d ? S.decos.rarities[d.rarity].color : '#bbb';
+    off.classList.toggle('hidden', !d);
+  }
+  for (const [slot, { tab, pane, groups }] of slotViews) {
+    tab.classList.toggle('active', slot === decoSlot);
+    pane.classList.toggle('hidden', slot !== decoSlot);
+    for (const g of groups) g.info.textContent = `${g.items.filter((x) => ds.owned[x.id] > 0).length}/${g.items.length} 种`;
+  }
 }
 
 let chestOpening = false;
@@ -697,21 +740,20 @@ async function mergeDecos(rarity) {
   revealDeco(r.item, r.isNew, '合成得到了');
 }
 
-async function equipDeco(id) {
-  if (!S.decoState.owned[id]) return;
-  const r = await api.equipDeco(S.decoState.equipped === id ? '' : id);
+// Wears `id` in `slot` ("" takes it off).
+async function wear(slot, id) {
+  const r = await api.equipDeco(slot, id);
   if (!r.ok) return toast(r.error);
   S.decoState = r.decoState;
   renderDecos();
   renderMe();
 }
 
-$('#decoOff').addEventListener('click', async () => {
-  const r = await api.equipDeco('');
-  S.decoState = r.decoState;
-  renderDecos();
-  renderMe();
-});
+function toggleWear(id) {
+  const d = decoById.get(id);
+  if (!d || !S.decoState.owned[id]) return;
+  wear(d.slot, S.decoState.worn?.[d.slot] === id ? '' : id);
+}
 
 // ---------------------------------------------------------------- updates
 function renderUpdate() {

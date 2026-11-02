@@ -66,7 +66,7 @@ const id = (n) => `player-${String(n).padStart(4, '0')}`;
 test('joins, sees roster and status updates', () => withServer([], async (port) => {
   const a = client(port, { id: id(1), name: 'A' });
   await a.wait((m) => m.t === 'welcome');
-  const b = client(port, { id: id(2), name: 'B', char: 'kimi', deco: 'crown-ruby' });
+  const b = client(port, { id: id(2), name: 'B', char: 'kimi', deco: 'crown-ruby', decos: ['crown-ruby', 'pet-fox'] });
   await b.wait((m) => m.t === 'welcome');
   b.send({ t: 'status', count: 10, typing: true, inv: { tomato: 2 }, chest: true });
   const st = await a.wait((m) => m.t === 'state' && m.players.some((p) => p.id === id(2) && p.count === 10));
@@ -75,12 +75,16 @@ test('joins, sees roster and status updates', () => withServer([], async (port) 
   assert.equal(pb.typing, true);
   assert.equal(pb.inv.tomato, 2);
   assert.equal(pb.deco, 'crown-ruby');
+  assert.deepEqual(pb.decos, ['crown-ruby', 'pet-fox']);
   assert.equal(pb.chest, true);
   assert.equal(st.players.find((p) => p.id === id(1)).chest, false);
   assert.equal(st.players.find((p) => p.id === id(1)).deco, '');
   assert.deepEqual(st.players.map((p) => p.id), [id(1), id(2)], 'join order is stable');
+  b.send({ t: 'profile', name: 'B', decos: ['<img>', 'wings-angel'] });
+  await a.wait((m) => m.t === 'state' && m.players.some((p) => p.id === id(2) && p.decos.join() === 'wings-angel'));
+  // A v2.1 client only knows the single "deco".
   b.send({ t: 'profile', name: 'B', deco: '<img>' });
-  await a.wait((m) => m.t === 'state' && m.players.some((p) => p.id === id(2) && p.deco === ''));
+  await a.wait((m) => m.t === 'state' && m.players.some((p) => p.id === id(2) && p.deco === '' && p.decos.length === 0));
   a.ws.close(); b.ws.close();
 }));
 

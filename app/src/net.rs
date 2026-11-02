@@ -290,8 +290,9 @@ fn friendly_error(e: &str) -> String {
 
 /// `json!` helper for callers building hello payloads.
 #[allow(clippy::too_many_arguments)]
-pub fn hello_payload(id: &str, secret: &str, name: &str, character: &str, deco: &str, skin: Option<&Value>, count: u64, inv: Value) -> Value {
-    json!({ "id": id, "secret": secret, "name": name, "char": character, "deco": deco, "skin": skin, "count": count, "inv": inv })
+pub fn hello_payload(id: &str, secret: &str, name: &str, character: &str, worn: &[String], skin: Option<&Value>, count: u64, inv: Value) -> Value {
+    // "deco" (one item) is what v2.1 relays understand.
+    json!({ "id": id, "secret": secret, "name": name, "char": character, "deco": worn.first(), "decos": worn, "skin": skin, "count": count, "inv": inv })
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 'use strict';
 // Draws the cosmetics ("装扮") procedurally:
 //   ui/assets/decos/<id>.png    one transparent PNG per item
-//   ui/assets/decos/decos.json  [{ id, name, rarity, layer, box }] (read by the app at build time)
+//   ui/assets/decos/decos.json  [{ id, name, rarity, slot, layer, box }] (read by the app at build time)
 //                               box = [x0, y0, x1, y1]: square crop around the art, for icons
 // Every PNG covers the character's image box widened by 20% on both sides and 25% upwards, so
 // one picture fits every character (and custom skins): hats on top, pets / balloons beside.
@@ -715,7 +715,14 @@ function hashStr(s) {
 // ---------------------------------------------------------------- catalogue
 // rarity: 0 普通, 1 稀有, 2 史诗, 3 传说, 4 神话 (names / odds live in app/src/decos.rs).
 const ITEMS = [];
-const add = (id, name, rarity, draw, opts = {}) => ITEMS.push({ id, name, rarity, layer: opts.layer || 'front', draw, opts });
+// slot: what it's worn as, one of each at a time: "head" 头饰 / "pet" 宠物 / "fx" 特效.
+// The first 100 items predate slots; their slot follows from the id.
+const slotOf = (id) => {
+  if (/^(balloon|hearts|wings|moon|sparkle|butterfly|flame|rainbow|seraph|galaxy)/.test(id)) return 'fx';
+  if (/^(star-(gold|pink|ice|moon)|slime|cloud|planet)/.test(id)) return 'pet';
+  return 'head';
+};
+const add = (id, name, rarity, draw, opts = {}) => ITEMS.push({ id, name, rarity, slot: opts.slot || slotOf(id), layer: opts.layer || 'front', draw, opts });
 const C6 = [['red', '红', '#ff5a5a'], ['orange', '橙', '#ff9f43'], ['yellow', '黄', '#ffd43b'], ['green', '绿', '#51cf66'], ['blue', '蓝', '#4dabf7'], ['purple', '紫', '#b197fc']];
 
 for (const [k, n, cc] of C6) add(`party-${k}`, `${n}色派对帽`, 0, (c) => partyHat(c, cc, k === 'yellow' ? '#ff6b9a' : '#fff3bf'));
@@ -758,13 +765,370 @@ add('galaxy', '银河', 4, galaxy, { layer: 'back', glow: '#9775fa', outline: 0 
 add('rainbow-halo', '七彩圣环', 4, rainbowHalo, { layer: 'back', glow: '#fff3bf', outline: 0 });
 add('crown-god', '神之冠', 4, godCrown, { glow: '#ffd43b' });
 
+// ---------------------------------------------------------------- masks (头饰)
+// Where the eyes are, averaged over the six characters (their faces sit a little left of
+// centre); eye masks leave holes there so the eyes still show.
+const EX = 150;
+const EY = 176;
+const mirrorAt = (pts, x0) => pts.map(([x, y]) => [2 * x0 - x, y]).reverse();
+
+/** Draws on a fresh layer, then pastes it rotated by `a` and scaled by `k` around (cx, cy). */
+function tilted(c, cx, cy, a, draw, k = 1) {
+  const L = new Canvas();
+  draw(L);
+  const R = new Canvas();
+  const cos = Math.cos(-a); const sin = Math.sin(-a);
+  for (let y = 0; y < R.H; y++) {
+    for (let x = 0; x < R.W; x++) {
+      const dx = (x + 0.5) / SS - cx; const dy = (y + 0.5) / SS - cy;
+      const sx = Math.floor((cx + (dx * cos - dy * sin) / k) * SS); const sy = Math.floor((cy + (dx * sin + dy * cos) / k) * SS);
+      if (sx < 0 || sy < 0 || sx >= L.W || sy >= L.H) continue;
+      const s = (sy * L.W + sx) * 4; const d = (y * R.W + x) * 4;
+      for (let k = 0; k < 4; k++) R.px[d + k] = L.px[s + k];
+    }
+  }
+  c.draw(R);
+}
+
+const eyeHoles = () => [[ellipse(EX - 20.5, EY + 1, 10.5, 8, -0.1)], [ellipse(EX + 20.5, EY + 1, 10.5, 8, 0.1)]];
+
+// Outline of a masquerade mask: swept-up outer corners, a bridge over the nose.
+function masqueradeShape(lift = 1) {
+  const left = [
+    ...bezier([EX, EY - 7], [EX - 12, EY - 17], [EX - 36, EY - 18 - 4 * lift], [EX - 56, EY - 20 - 10 * lift]),
+    ...bezier([EX - 56, EY - 20 - 10 * lift], [EX - 52, EY - 4], [EX - 44, EY + 15], [EX - 24, EY + 17]).slice(1),
+    ...bezier([EX - 24, EY + 17], [EX - 12, EY + 18], [EX - 6, EY + 9], [EX, EY + 8]).slice(1),
+  ];
+  return [...left, ...mirrorAt(left, EX).slice(1, -1)];
+}
+
+function domino(c, color) {
+  const L = new Canvas();
+  L.fill([[ellipse(EX - 21, EY, 27, 16, -0.15)], [ellipse(EX + 21, EY, 27, 16, 0.15)]], shade(color, EY - 16, EY + 16));
+  L.fill(eyeHoles(), solid(WHITE), 'erase');
+  c.draw(L);
+  shine(c, EX - 34, EY - 8, 7, 3, -0.3, 0.45);
+}
+
+function sunglasses(c) {
+  const lens = vgrad('#5a6070', '#0e1015', EY - 12, EY + 12);
+  c.fill(stroke([[EX - 7, EY - 6], [EX + 7, EY - 6]], 3.5), solid('#2b2f38'));
+  c.fill(roundRect(EX - 45, EY - 12, 38, 25, 10), lens);
+  c.fill(roundRect(EX + 7, EY - 12, 38, 25, 10), lens);
+  for (const x of [EX - 38, EX + 14]) c.fill([[x, EY + 10], [x + 8, EY - 10], [x + 14, EY - 10], [x + 6, EY + 10]], solid(WHITE, 0.3));
+}
+
+function shapedGlasses(c, lensFor, color) {
+  c.fill(stroke([[EX - 6, EY - 4], [EX + 6, EY - 4]], 3), solid(darken(col(color), 0.3)));
+  for (const s of [-1, 1]) {
+    const x = EX + 21 * s;
+    c.fill(lensFor(x, EY), radial(lighten(col(color), 0.45), col(color), x - 6, EY - 6, 24, 0.82, 0.82));
+    shine(c, x - 7, EY - 6, 5, 2.5, -0.5, 0.6);
+  }
+}
+
+function masquerade(c, base, trim, gemColor, feather) {
+  const L = new Canvas();
+  const shape = masqueradeShape();
+  L.fill(shape, typeof base === 'function' ? base : shade(base, EY - 30, EY + 18));
+  L.fill(eyeHoles(), solid(WHITE), 'erase');
+  c.draw(L);
+  c.fill(stroke([...shape, shape[0]], 2.6), solid(trim));
+  for (const s of [-1, 1]) c.fill(ring(EX + 20.5 * s, EY + 1, 12.5, 10, 2.4, 0.1 * s), solid(trim));
+  if (feather) {
+    for (const [a, len, w] of [[-1.15, 46, 8], [-0.8, 40, 7], [-1.45, 34, 6]]) {
+      const ox = EX + 52; const oy = EY - 26;
+      const ux = Math.cos(a); const uy = Math.sin(a);
+      c.fill(ellipse(ox + ux * len * 0.5, oy + uy * len * 0.5, len * 0.5, w, a), radial(lighten(col(feather), 0.5), col(feather), ox + ux * len * 0.7, oy + uy * len * 0.7, len * 0.6));
+      c.fill(stroke([[ox, oy], [ox + ux * len * 0.9, oy + uy * len * 0.9]], 1.2), solid(darken(col(feather), 0.35), 0.8));
+    }
+  }
+  if (gemColor) gem(c, EX, EY - 9, 6.5, gemColor);
+}
+
+function butterflyMask(c, inner, outer) {
+  const L = new Canvas();
+  const lobes = [[ellipse(EX - 27, EY - 7, 30, 19, -0.5)], [ellipse(EX - 17, EY + 10, 17, 11, 0.45)], [ellipse(EX + 27, EY - 7, 30, 19, 0.5)], [ellipse(EX + 17, EY + 10, 17, 11, -0.45)]];
+  L.fill(lobes, radial(inner, outer, EX, EY, 48));
+  for (const s of [-1, 1]) {
+    for (const [dx, dy, r] of [[-46, -18, 4], [-36, -26, 3], [-28, 16, 3]]) L.fill(circle(EX - dx * s, EY + dy, r), solid(WHITE, 0.85), 'atop');
+  }
+  L.fill(eyeHoles(), solid(WHITE), 'erase');
+  c.draw(L);
+  c.fill(roundRect(EX - 3.5, EY - 14, 7, 28, 3.5), solid(INK));
+  for (const s of [-1, 1]) c.fill(stroke(bezier([EX, EY - 12], [EX + 4 * s, EY - 26], [EX + 12 * s, EY - 34], [EX + 18 * s, EY - 34]), 1.6), solid(INK));
+}
+
+function roseMask(c) {
+  masquerade(c, '#c92a2a', '#f6c445', null, null);
+  const rx = EX - 54; const ry = EY - 26;
+  c.fill(ellipse(rx + 12, ry + 10, 10, 5, 0.6), shade('#51cf66', ry + 5, ry + 15));
+  c.fill(circle(rx, ry, 12), radial('#ff6b6b', '#a51111', rx - 3, ry - 3, 14));
+  for (const [r, a0] of [[8, 0.3], [5, 2.2], [2.5, 4]]) c.fill(stroke(ellipse(rx, ry, r, r).slice(Math.round(a0 * 10), Math.round(a0 * 10) + 50), 1.4), solid('#7a0b0b', 0.75));
+}
+
+function moonMask(c) {
+  masquerade(c, vgrad('#e7f5ff', '#91a7ff', EY - 30, EY + 18), '#dbe4ff', null, null);
+  const L = new Canvas();
+  L.fill(circle(EX, EY - 34, 15), radial('#fffbe6', '#ffd43b', EX - 4, EY - 38, 18));
+  L.fill(circle(EX + 7, EY - 39, 13), solid(WHITE), 'erase');
+  c.draw(L);
+  for (const [x, y, r] of [[EX - 40, EY - 34, 5], [EX + 34, EY - 32, 6], [EX + 54, EY - 10, 4], [EX - 58, EY - 6, 4]]) sparkle(c, x, y, r, '#fff6c2');
+  gem(c, EX, EY - 9, 6, '#74c0fc');
+}
+
+// Festival masks worn on the side of the head (not over the face).
+const MX = HX - 64;
+const MY = HY + 36;
+function sideMask(c, kind, k = 1.3) {
+  tilted(c, MX, MY, -0.42, (L) => {
+    const s = k;
+    const pal = {
+      fox: ['#ffffff', '#e9ecef', '#e03131'], cat: ['#fff5f8', '#f3d9e2', '#f06595'], bunny: ['#ffffff', '#f1f3f5', '#f783ac'],
+      panda: ['#ffffff', '#e9ecef', '#212529'], pig: ['#ffc9de', '#faa2c1', '#e64980'], oni: ['#ff6b6b', '#c92a2a', '#212529'],
+      tengu: ['#fa5252', '#a51111', '#212529'], kitsune: ['#ffffff', '#fff3d6', '#f6c445'],
+    }[kind];
+    const [f0, f1, mark] = pal;
+    const fp = vgrad(f0, f1, MY - 30 * s, MY + 32 * s);
+    const ears = (inner, tall = 1) => {
+      for (const m of [(p) => p, (p) => mirrorAt(p, MX)]) {
+        L.fill(m([[MX - 21 * s, MY - 14 * s], [MX - 22 * s, MY - (36 + 6 * tall) * s], [MX - 4 * s, MY - 24 * s]]), fp);
+        if (inner) L.fill(m([[MX - 18 * s, MY - 17 * s], [MX - 19 * s, MY - (30 + 5 * tall) * s], [MX - 8 * s, MY - 23 * s]]), solid(inner));
+      }
+    };
+    if (kind === 'fox' || kind === 'kitsune') ears(mark, 1.4);
+    if (kind === 'cat') ears('#ffb3c4');
+    if (kind === 'pig') for (const m of [(p) => p, (p) => mirrorAt(p, MX)]) L.fill(m([[MX - 20 * s, MY - 18 * s], [MX - 27 * s, MY - 31 * s], [MX - 8 * s, MY - 25 * s]]), solid(f1));
+    if (kind === 'bunny') for (const sx of [-1, 1]) { L.fill(ellipse(MX + 9 * sx * s, MY - 38 * s, 7 * s, 20 * s, 0.15 * sx), fp); L.fill(ellipse(MX + 9 * sx * s, MY - 36 * s, 3.5 * s, 14 * s, 0.15 * sx), solid('#ffb3c4')); }
+    if (kind === 'panda') for (const sx of [-1, 1]) L.fill(circle(MX + 19 * sx * s, MY - 22 * s, 9 * s), solid(mark));
+    if (kind === 'oni') for (const sx of [-1, 1]) L.fill([[MX + 8 * sx * s, MY - 22 * s], [MX + 15 * sx * s, MY - 42 * s], [MX + 18 * sx * s, MY - 20 * s]], vgrad('#fff9db', '#e9d8a6', MY - 42 * s, MY - 20 * s));
+    // the face: foxes get a pointed chin
+    const pointed = kind === 'fox' || kind === 'kitsune';
+    const faceShape = ellipse(MX, MY, 25 * s, 28 * s).map(([x, y]) => {
+      const t = Math.max(0, (y - MY) / (28 * s));
+      return pointed ? [MX + (x - MX) * (1 - 0.5 * t), y + 7 * s * t] : [x, y];
+    });
+    L.fill(faceShape, fp);
+    const eye = (sx) => [MX + 10 * sx * s, MY - 2 * s];
+    if (kind === 'fox' || kind === 'kitsune') {
+      for (const sx of [-1, 1]) {
+        const [x, y] = eye(sx);
+        L.fill(stroke(bezier([x - 6 * sx * s, y + 2 * s], [x - 2 * sx * s, y - 1 * s], [x + 3 * sx * s, y - 2 * s], [x + 7 * sx * s, y - 5 * s]), 2.4 * s), solid(INK));
+        L.fill(stroke(bezier([x - 4 * sx * s, y - 7 * s], [x, y - 11 * s], [x + 4 * sx * s, y - 12 * s], [x + 8 * sx * s, y - 16 * s]), 2.2 * s), solid(mark));
+      }
+      L.fill(ellipse(MX, MY - 16 * s, 2.5 * s, 5 * s), solid(mark));
+      L.fill(ellipse(MX, MY + 26 * s, 3 * s, 2.2 * s), solid(INK));
+    } else if (kind === 'cat') {
+      for (const sx of [-1, 1]) {
+        const [x, y] = eye(sx);
+        L.fill(stroke(bezier([x - 5 * s, y + 1 * s], [x - 3 * s, y - 4 * s], [x + 3 * s, y - 4 * s], [x + 5 * s, y + 1 * s]), 2 * s), solid(INK));
+        for (const dy of [-2, 2]) L.fill(stroke([[MX + 13 * sx * s, MY + (9 + dy) * s], [MX + 25 * sx * s, MY + (8 + dy * 2) * s]], 1.1 * s), solid(INK, 0.6));
+        L.fill(ellipse(MX + 15 * sx * s, MY + 6 * s, 4 * s, 2.4 * s), solid('#ff8fa3', 0.6));
+      }
+      L.fill(ellipse(MX, MY + 5 * s, 2.4 * s, 1.8 * s), solid('#f06595'));
+      for (const sx of [-1, 1]) L.fill(stroke(bezier([MX, MY + 7 * s], [MX + 1 * sx * s, MY + 10 * s], [MX + 4 * sx * s, MY + 10 * s], [MX + 5 * sx * s, MY + 7 * s], 8), 1.3 * s), solid(INK));
+    } else if (kind === 'oni' || kind === 'tengu') {
+      for (const sx of [-1, 1]) {
+        const [x, y] = eye(sx);
+        L.fill(rotate(roundRect(x - 7 * s, y - 12 * s, 14 * s, 4.5 * s, 2 * s), x, y - 10 * s, 0.35 * sx), solid(kind === 'tengu' ? WHITE : INK));
+        L.fill(ellipse(x, y, 5 * s, 4 * s), solid('#ffd43b'));
+        L.fill(circle(x, y, 2 * s), solid(INK));
+      }
+      if (kind === 'oni') {
+        L.fill(roundRect(MX - 12 * s, MY + 10 * s, 24 * s, 8 * s, 4 * s), solid('#5c0f0f'));
+        for (const sx of [-1, 1]) L.fill([[MX + 7 * sx * s, MY + 10 * s], [MX + 11 * sx * s, MY + 10 * s], [MX + 9 * sx * s, MY + 16 * s]], solid(WHITE));
+      } else {
+        // the long nose, sticking out sideways
+        const nose = [[MX - 3 * s, MY + 1 * s], [MX + 30 * s, MY + 12 * s], [MX + 33 * s, MY + 16 * s], [MX + 29 * s, MY + 18 * s], [MX - 3 * s, MY + 13 * s]];
+        L.fill(nose, vgrad('#ff8787', '#a51111', MY, MY + 18 * s));
+        L.fill(stroke([[MX + 2 * s, MY + 4 * s], [MX + 27 * s, MY + 13 * s]], 1.6 * s), solid(WHITE, 0.45));
+        L.fill(stroke(bezier([MX - 9 * s, MY + 20 * s], [MX - 4 * s, MY + 23 * s], [MX + 4 * s, MY + 23 * s], [MX + 9 * s, MY + 20 * s], 10), 1.6 * s), solid(INK));
+      }
+    } else if (kind === 'panda') {
+      for (const sx of [-1, 1]) {
+        const [x, y] = eye(sx);
+        L.fill(ellipse(x, y + 1 * s, 6.5 * s, 8.5 * s, -0.5 * sx), solid(mark));
+        L.fill(circle(x + 1 * sx * s, y, 2.2 * s), solid(WHITE));
+      }
+      L.fill(ellipse(MX, MY + 9 * s, 3.5 * s, 2.5 * s), solid(mark));
+    } else {
+      for (const sx of [-1, 1]) {
+        const [x, y] = eye(sx);
+        L.fill(ellipse(x, y, 2.6 * s, 3.4 * s), solid(kind === 'bunny' ? '#c92a2a' : INK));
+        L.fill(ellipse(MX + 15 * sx * s, MY + 7 * s, 4 * s, 2.4 * s), solid('#ff8fa3', 0.6));
+      }
+      if (kind === 'pig') {
+        L.fill(ellipse(MX, MY + 9 * s, 9 * s, 6.5 * s), solid(lighten(col(f1), 0.25)));
+        for (const sx of [-1, 1]) L.fill(ellipse(MX + 3.2 * sx * s, MY + 9 * s, 1.6 * s, 2.4 * s), solid('#c2255c'));
+      } else {
+        L.fill(ellipse(MX, MY + 7 * s, 2.4 * s, 1.8 * s), solid(mark));
+      }
+    }
+    if (kind === 'kitsune') {
+      for (const [x, y, r] of [[MX - 30 * s, MY - 30 * s, 5], [MX + 30 * s, MY - 34 * s, 6]]) sparkle(L, x, y, r, '#fff3bf');
+    }
+    // the cord holding it on
+    L.fill(stroke(bezier([MX + 24 * s, MY - 4 * s], [MX + 40 * s, MY - 8 * s], [MX + 52 * s, MY - 4 * s], [MX + 62 * s, MY + 4 * s]), 2), solid(mark === INK ? '#e03131' : mark));
+  });
+}
+
+// ---------------------------------------------------------------- pets (宠物)
+// A chibi animal sitting at the character's lower left, drawn small and scaled up around its feet.
+const PX = 50;
+const PY = 280;
+const PET_SCALE = 1.35;
+function animal(c, o) {
+  tilted(c, PX - 6, PY + 40, 0, (L) => drawAnimal(L, o), PET_SCALE);
+}
+
+function drawAnimal(c, o) {
+  const k = col(o.body);
+  const bodyPaint = o.paint || shade(k, PY - 32, PY + 36);
+  const other = (p) => mirrorAt(p, PX);
+  const both = (p, paint, mode) => { c.fill(p, paint, mode); c.fill(other(p), paint, mode); };
+  if (o.back) o.back(c);
+  // tail (behind)
+  const tc = o.tailColor || k;
+  if (o.tail === 'cat') c.fill(stroke(bezier([PX + 16, PY + 28], [PX + 38, PY + 30], [PX + 40, PY + 6], [PX + 30, PY - 6]), 7), solid(tc));
+  if (o.tail === 'fox') {
+    c.fill(ellipse(PX + 28, PY + 14, 11, 23, 0.7), shade(tc, PY - 8, PY + 34));
+    c.fill(ellipse(PX + 41, PY + 2, 6, 8, 0.7), solid(o.tailTip || WHITE));
+  }
+  if (o.tail === 'nine') {
+    for (let i = 0; i < 5; i++) {
+      const a = -0.5 + i * 0.5;
+      const ux = Math.cos(a - Math.PI / 2 + 0.9); const uy = Math.sin(a - Math.PI / 2 + 0.9);
+      const cx = PX + 6 + ux * 30; const cy = PY + 18 + uy * 30;
+      c.fill(ellipse(cx, cy, 10, 22, Math.atan2(uy, ux) + Math.PI / 2), shade(tc, cy - 20, cy + 20));
+      c.fill(ellipse(cx + ux * 15, cy + uy * 15, 6, 8, Math.atan2(uy, ux) + Math.PI / 2), solid(o.tailTip || '#ffd43b'));
+    }
+  }
+  if (o.tail === 'curl') c.fill(ring(PX + 24, PY + 14, 8, 8, 3.5), solid(tc));
+  if (o.tail === 'puff') c.fill(circle(PX + 22, PY + 28, 7), solid(o.tailColor || WHITE));
+  if (o.tail === 'dragon') c.fill([[PX + 14, PY + 22], [PX + 44, PY + 30], [PX + 40, PY + 20], [PX + 50, PY + 14], [PX + 36, PY + 14], [PX + 18, PY + 12]], shade(tc, PY + 10, PY + 32));
+  // ears that stand up are drawn before the head so their base tucks behind it
+  const ec = o.earColor || k;
+  const earPaint = shade(ec, PY - 50, PY - 10);
+  const inner = o.earInner || '#ffb3c4';
+  if (o.ears === 'cat') { both([[PX - 23, PY - 18], [PX - 20, PY - 40], [PX - 5, PY - 28]], earPaint); both([[PX - 19, PY - 21], [PX - 18, PY - 34], [PX - 9, PY - 27]], solid(inner)); }
+  if (o.ears === 'fox') { both([[PX - 25, PY - 16], [PX - 23, PY - 46], [PX - 4, PY - 28]], earPaint); both([[PX - 20, PY - 20], [PX - 20, PY - 38], [PX - 9, PY - 27]], solid(inner)); }
+  if (o.ears === 'big') { both([[PX - 26, PY - 14], [PX - 27, PY - 50], [PX - 6, PY - 28]], earPaint); both([[PX - 22, PY - 19], [PX - 23, PY - 41], [PX - 11, PY - 27]], solid(inner)); }
+  if (o.ears === 'bunny') for (const s of [-1, 1]) { c.fill(ellipse(PX + 10 * s, PY - 44, 7.5, 21, 0.15 * s), earPaint); c.fill(ellipse(PX + 10 * s, PY - 42, 3.5, 15, 0.15 * s), solid(inner)); }
+  if (o.ears === 'bear') for (const s of [-1, 1]) { c.fill(circle(PX + 19 * s, PY - 26, 9), earPaint); c.fill(circle(PX + 19 * s, PY - 26, 4.5), solid(inner)); }
+  if (o.ears === 'small') for (const s of [-1, 1]) { c.fill(circle(PX + 17 * s, PY - 27, 7), earPaint); c.fill(circle(PX + 17 * s, PY - 27, 3.5), solid(inner)); }
+  if (o.ears === 'koala') for (const s of [-1, 1]) { c.fill(circle(PX + 25 * s, PY - 20, 13), earPaint); c.fill(circle(PX + 24 * s, PY - 19, 7.5), solid(inner)); }
+  if (o.ears === 'pig') both([[PX - 20, PY - 22], [PX - 26, PY - 36], [PX - 8, PY - 28]], earPaint);
+  if (o.ears === 'horse') both([[PX - 18, PY - 22], [PX - 18, PY - 38], [PX - 8, PY - 27]], earPaint);
+  if (o.ears === 'dragon') both([[PX - 14, PY - 24], [PX - 22, PY - 44], [PX - 6, PY - 28]], vgrad('#fff9db', '#e9c46a', PY - 44, PY - 24));
+  // body + head on one layer so patches / stripes can be painted onto them
+  const L = new Canvas();
+  if (o.blob) {
+    L.fill(ellipse(PX, PY + 8, 30, 29), bodyPaint);
+  } else {
+    L.fill(ellipse(PX, PY + 18, 23, 18), bodyPaint);
+    L.fill(ellipse(PX, PY - 8, 26, 22), bodyPaint);
+  }
+  if (o.belly) L.fill(o.blob ? ellipse(PX, PY + 16, 19, 18) : ellipse(PX, PY + 22, 13, 11), solid(o.belly), 'atop');
+  if (o.muzzle) L.fill(ellipse(PX, PY + 2, 15, 10), solid(o.muzzle), 'atop');
+  for (const [x, y, rx, ry, rot, cc] of o.patches || []) L.fill(ellipse(PX + x, PY + y, rx, ry, rot), solid(cc), 'atop');
+  if (o.stripes) for (const dx of [-7, 0, 7]) L.fill(stroke([[PX + dx, PY - 29], [PX + dx * 0.8, PY - 21]], 3), solid(o.stripes), 'atop');
+  if (o.stars) { const rand = rng(hashStr(o.body)); for (let i = 0; i < 26; i++) L.fill(circle(PX - 30 + rand() * 60, PY - 32 + rand() * 70, 0.7 + rand() * 1.3), solid(WHITE, 0.9), 'atop'); }
+  c.draw(L);
+  if (o.ears === 'floppy') for (const s of [-1, 1]) c.fill(ellipse(PX + 24 * s, PY - 6, 8, 15, -0.35 * s), shade(o.earColor || darken(k, 0.25), PY - 20, PY + 10));
+  // feet
+  const fc = o.feet || darken(k, 0.08);
+  for (const s of [-1, 1]) c.fill(ellipse(PX + 10 * s, PY + 35, 7, 4.5), solid(fc));
+  // face
+  const ey = o.blob ? PY + 2 : PY - 7;
+  const ex = o.blob ? 10 : 9;
+  if (o.eyePatch) for (const s of [-1, 1]) c.fill(ellipse(PX + ex * s, ey + 1, 6.5, 8, -0.5 * s), solid(o.eyePatch));
+  for (const s of [-1, 1]) {
+    const x = PX + ex * s;
+    if (o.frogEyes) {
+      c.fill(circle(x + 4 * s, ey - 17, 9), shade(k, ey - 26, ey - 8));
+      c.fill(circle(x + 4 * s, ey - 17, 6), solid(WHITE));
+      c.fill(circle(x + 4 * s, ey - 16, 3.4), solid(INK));
+      continue;
+    }
+    if (o.happy) c.fill(stroke(bezier([x - 4, ey + 1], [x - 3, ey - 3.5], [x + 3, ey - 3.5], [x + 4, ey + 1], 8), 1.8), solid(INK));
+    else {
+      c.fill(ellipse(x, ey, 3.3, 4.3), solid(o.eyes || INK));
+      if (o.eyes) c.fill(ellipse(x, ey, 1.3, 3.4), solid(INK));
+      c.fill(circle(x + 1, ey - 1.6, 1.2), solid(WHITE));
+    }
+    c.fill(ellipse(PX + 16 * s, ey + 7, 4, 2.4), solid(o.blush || '#ff8fa3', 0.6));
+  }
+  if (o.beak === 'chick') c.fill([[PX - 4, ey + 6], [PX + 4, ey + 6], [PX, ey + 11]], solid('#ff922b'));
+  if (o.beak === 'duck') c.fill(ellipse(PX, ey + 8, 8, 4), shade('#ff922b', ey + 4, ey + 12));
+  if (o.beak === 'penguin') c.fill([[PX - 4, ey + 5], [PX + 4, ey + 5], [PX, ey + 10]], solid('#ffa94d'));
+  if (o.snout) { c.fill(ellipse(PX, ey + 8, 7.5, 5.5), solid(o.snout)); for (const s of [-1, 1]) c.fill(ellipse(PX + 2.7 * s, ey + 8, 1.4, 2), solid('#c2255c')); }
+  if (o.nose) c.fill(ellipse(PX, ey + 5.5, o.bigNose ? 4.5 : 2.2, o.bigNose ? 3.5 : 1.6), solid(o.nose));
+  if (o.mouth === 'w') for (const s of [-1, 1]) c.fill(stroke(bezier([PX, ey + 7], [PX + 0.8 * s, ey + 10], [PX + 3.5 * s, ey + 10], [PX + 4.5 * s, ey + 7], 8), 1.3), solid(INK));
+  if (o.mouth === 'smile') c.fill(stroke(bezier([PX - 6, ey + 9], [PX - 3, ey + 13], [PX + 3, ey + 13], [PX + 6, ey + 9], 10), 1.4), solid(INK));
+  if (o.tuft) for (const [x, rot] of [[-4, -0.5], [0, 0], [4, 0.5]]) c.fill(ellipse(PX + x, PY - 22, 3, 7, rot), solid(o.tuft));
+  if (o.flippers) for (const s of [-1, 1]) c.fill(ellipse(PX + 28 * s, PY + 14, 6, 13, 0.4 * s), solid(o.flippers));
+  if (o.wings) for (const s of [-1, 1]) c.fill(ellipse(PX + 26 * s, PY + 12, 7, 11, -0.5 * s), shade(lighten(k, 0.15), PY, PY + 24));
+  if (o.front) o.front(c);
+}
+
+function unicornExtras(c) {
+  ['#ff8fab', '#ffd43b', '#69db7c', '#74c0fc', '#b197fc'].forEach((cc, i) => c.fill(circle(PX + 6 + i * 4, PY - 28 + i * 6, 7), solid(cc)));
+  c.fill([[PX - 6, PY - 26], [PX + 1, PY - 56], [PX + 6, PY - 26]], vgrad('#fff3bf', '#f6c445', PY - 56, PY - 26));
+  for (const y of [-34, -42]) c.fill(stroke([[PX - 3, PY + y + 3], [PX + 4, PY + y]], 1.2), solid('#c98a14', 0.7));
+}
+
+function dragonWings(c) {
+  for (const s of [-1, 1]) {
+    const pts = [[PX + 12 * s, PY + 8], [PX + 40 * s, PY - 28], [PX + 44 * s, PY - 6], [PX + 36 * s, PY - 2], [PX + 38 * s, PY + 10], [PX + 26 * s, PY + 8], [PX + 24 * s, PY + 18]];
+    c.fill(s < 0 ? pts : pts.reverse(), shade('#38d9a9', PY - 28, PY + 18));
+  }
+}
+
+// ---------------------------------------------------------------- new catalogue: masks + pets
+const HEAD = { slot: 'head' };
+const PET = { slot: 'pet' };
+for (const [k, n, cc] of [['black', '黑色', '#343a40'], ['red', '红色', '#e03131'], ['blue', '蓝色', '#1c7ed6']]) add(`eyemask-${k}`, `${n}眼罩`, 0, (c) => domino(c, cc), HEAD);
+add('shades', '酷炫墨镜', 0, sunglasses, HEAD);
+add('glasses-heart', '爱心眼镜', 0, (c) => shapedGlasses(c, (x, y) => heart(x, y + 1, 21), '#ff6b9a'), HEAD);
+add('glasses-star', '星星眼镜', 0, (c) => shapedGlasses(c, (x, y) => star(x, y + 1, 21, 11), '#ffd43b'), HEAD);
+for (const [k, n] of [['fox', '狐狸面具'], ['cat', '猫咪面具'], ['bunny', '兔子面具'], ['panda', '熊猫面具'], ['pig', '小猪面具'], ['oni', '鬼面']]) add(`mask-${k}`, n, 1, (c) => sideMask(c, k), HEAD);
+add('masq-violet', '紫羽舞会面具', 2, (c) => masquerade(c, '#7048e8', '#f6c445', '#e599f7', '#b197fc'), HEAD);
+add('masq-noir', '金边夜宴面具', 2, (c) => masquerade(c, '#212529', '#f6c445', '#fa5252', '#343a40'), HEAD);
+add('masq-butterfly', '蓝蝶面具', 2, (c) => butterflyMask(c, '#a5f3ff', '#1c3faa'), HEAD);
+add('masq-rose', '红玫瑰面具', 2, roseMask, HEAD);
+add('masq-gold', '黄金假面', 3, (c) => masquerade(c, vgrad('#fff3bf', '#d9a21a', EY - 30, EY + 18), '#fff9db', '#4dabf7', '#ffd43b'), { ...HEAD, glow: '#ffd43b' });
+add('mask-tengu', '天狗面具', 3, (c) => sideMask(c, 'tengu', 1.42), { ...HEAD, glow: '#ff8787' });
+add('mask-kitsune', '白狐神面', 3, (c) => sideMask(c, 'kitsune', 1.48), { ...HEAD, glow: '#ffe066' });
+add('masq-moon', '月光假面', 4, moonMask, { ...HEAD, glow: '#a5d8ff' });
+
+add('pet-chick', '小黄鸡', 0, (c) => animal(c, { body: '#ffe066', blob: true, beak: 'chick', tuft: '#fcc419', wings: true, feet: '#ff922b' }), PET);
+add('pet-duck', '小白鸭', 0, (c) => animal(c, { body: '#f8f9fa', blob: true, beak: 'duck', tuft: '#e9ecef', wings: true, feet: '#ff922b' }), PET);
+add('pet-frog', '小青蛙', 0, (c) => animal(c, { body: '#8ce99a', belly: '#e6fcf5', frogEyes: true, mouth: 'smile', feet: '#69db7c' }), PET);
+add('pet-pig', '小粉猪', 0, (c) => animal(c, { body: '#ffc9de', ears: 'pig', snout: '#ffdeeb', tail: 'curl', tailColor: '#faa2c1' }), PET);
+add('pet-hamster', '小仓鼠', 0, (c) => animal(c, { body: '#f7c07a', belly: '#fff8ec', muzzle: '#fff8ec', ears: 'small', nose: '#f06595', mouth: 'w' }), PET);
+add('pet-bunny', '小白兔', 0, (c) => animal(c, { body: '#ffffff', ears: 'bunny', nose: '#f783ac', mouth: 'w', tail: 'puff', eyes: '#e03131' }), PET);
+add('pet-orange-cat', '橘猫', 1, (c) => animal(c, { body: '#ffa94d', belly: '#fff4e6', ears: 'cat', stripes: '#e8590c', nose: '#f06595', mouth: 'w', tail: 'cat', tailColor: '#ff922b' }), PET);
+add('pet-black-cat', '黑猫', 1, (c) => animal(c, { body: '#3b3b45', ears: 'cat', eyes: '#ffd43b', nose: '#f783ac', mouth: 'w', tail: 'cat', feet: '#2b2b33' }), PET);
+add('pet-calico', '三花猫', 1, (c) => animal(c, { body: '#ffffff', ears: 'cat', earColor: '#ff922b', patches: [[-14, -14, 11, 9, 0.4, '#ff922b'], [14, -18, 9, 8, -0.3, '#343a40'], [8, 22, 10, 8, 0, '#ff922b']], nose: '#f783ac', mouth: 'w', tail: 'cat', tailColor: '#343a40' }), PET);
+add('pet-shiba', '柴犬', 1, (c) => animal(c, { body: '#f0a04b', belly: '#fff8ec', muzzle: '#fff8ec', ears: 'cat', earInner: '#fff0d6', nose: INK, mouth: 'w', tail: 'curl', happy: true }), PET);
+add('pet-corgi', '柯基', 1, (c) => animal(c, { body: '#f4a259', belly: '#ffffff', muzzle: '#ffffff', patches: [[0, -20, 4, 9, 0, '#ffffff']], ears: 'big', earInner: '#ffe3c2', nose: INK, mouth: 'smile', tail: 'puff' }), PET);
+add('pet-bear', '小棕熊', 1, (c) => animal(c, { body: '#a9714b', muzzle: '#e9c9a8', belly: '#d9a77e', ears: 'bear', earInner: '#e9c9a8', nose: INK, bigNose: true, mouth: 'w' }), PET);
+add('pet-fox', '小狐狸', 2, (c) => animal(c, { body: '#ff8a3d', muzzle: '#ffffff', belly: '#ffffff', ears: 'fox', earInner: '#4a3f48', nose: INK, mouth: 'w', tail: 'fox' }), PET);
+add('pet-panda', '熊猫', 2, (c) => animal(c, { body: '#ffffff', patches: [[0, 24, 26, 9, 0, '#2b2b33']], ears: 'bear', earColor: '#2b2b33', earInner: '#2b2b33', eyePatch: '#2b2b33', nose: INK, mouth: 'w', feet: '#2b2b33' }), PET);
+add('pet-penguin', '企鹅', 2, (c) => animal(c, { body: '#334061', belly: '#ffffff', blob: true, beak: 'penguin', flippers: '#26314d', feet: '#ffa94d', patches: [[0, 0, 20, 14, 0, '#ffffff']] }), PET);
+add('pet-koala', '考拉', 2, (c) => animal(c, { body: '#adb5bd', belly: '#e9ecef', ears: 'koala', earInner: '#f8f9fa', nose: '#343a40', bigNose: true }), PET);
+add('pet-unicorn', '独角兽', 3, (c) => animal(c, { body: '#fff9fb', belly: '#ffffff', ears: 'horse', earInner: '#ffc2d9', mouth: 'w', blush: '#ff8fab', front: unicornExtras, tail: 'puff', tailColor: '#d0bfff' }), { ...PET, glow: '#ffc2e0' });
+add('pet-dragon', '小飞龙', 3, (c) => animal(c, { body: '#63e6be', belly: '#fff3bf', ears: 'dragon', nose: '#0ca678', mouth: 'smile', tail: 'dragon', back: dragonWings }), { ...PET, glow: '#96f2d7' });
+add('pet-ninetail', '九尾狐', 3, (c) => animal(c, { body: '#ffffff', belly: '#fff9db', ears: 'fox', earInner: '#f6c445', nose: '#e03131', mouth: 'w', tail: 'nine', tailTip: '#ffd43b', front: (cc) => cc.fill(ellipse(PX, PY - 22, 2.4, 5), solid('#e03131')) }), { ...PET, glow: '#ffe066' });
+add('pet-cosmic-cat', '星空猫', 4, (c) => animal(c, { body: '#5f3dc4', paint: radial('#9775fa', '#1b1464', PX - 6, PY - 12, 60), stars: true, ears: 'cat', earInner: '#e599f7', eyes: '#ffe066', nose: '#f783ac', mouth: 'w', tail: 'cat', tailColor: '#3b2a8c', front: (cc) => { sparkle(cc, PX - 34, PY - 40, 7); sparkle(cc, PX + 34, PY - 24, 5); } }), { ...PET, glow: '#b197fc' });
+
 // ---------------------------------------------------------------- output
 function main() {
   const root = path.join(__dirname, '..');
   const out = path.join(root, 'ui', 'assets', 'decos');
   const counts = [0, 0, 0, 0, 0];
   for (const it of ITEMS) counts[it.rarity]++;
-  if (ITEMS.length !== 100 || new Set(ITEMS.map((i) => i.id)).size !== ITEMS.length) throw new Error(`need 100 unique items, got ${ITEMS.length}`);
+  if (new Set(ITEMS.map((i) => i.id)).size !== ITEMS.length) throw new Error('duplicate ids');
   fs.rmSync(out, { recursive: true, force: true });
   fs.mkdirSync(out, { recursive: true });
   const images = [];
@@ -777,9 +1141,10 @@ function main() {
     it.box = iconBox(img);
     process.stdout.write('.');
   }
-  const manifest = ITEMS.map(({ id, name, rarity, layer, box }) => ({ id, name, rarity, layer, box }));
+  const manifest = ITEMS.map(({ id, name, rarity, slot, layer, box }) => ({ id, name, rarity, slot, layer, box }));
   fs.writeFileSync(path.join(out, 'decos.json'), `[\n${manifest.map((m) => `  ${JSON.stringify(m)}`).join(',\n')}\n]\n`);
-  console.log(`\n${ITEMS.length} decos (by rarity: ${counts.join(' / ')}) -> ${path.relative(root, out)}`);
+  const slots = ['head', 'pet', 'fx'].map((k) => `${k} ${ITEMS.filter((i) => i.slot === k).length}`).join(', ');
+  console.log(`\n${ITEMS.length} decos (by rarity: ${counts.join(' / ')}; ${slots}) -> ${path.relative(root, out)}`);
   if (process.argv.includes('--preview')) preview(root, images);
 }
 
@@ -798,16 +1163,17 @@ function iconBox(img) {
   return [left, top, left + side, top + side];
 }
 
-/** Contact sheets: every item worn by a character, one sheet per rarity. */
+/** Contact sheets, one per slot: every item worn by a character (cycling through all six). */
 function preview(root, images) {
-  const charImg = decodePng(path.join(root, 'ui', 'assets', 'characters', 'claude', 'idle.png'));
-  const ch = Math.round(BOX.h); const cw = Math.round((charImg.w / charImg.h) * ch);
-  const char = resize(charImg, cw, ch);
-  const cx = BOX.x + Math.round((BOX.w - cw) / 2);
+  const chars = ['claude', 'codex', 'doubao', 'gemini', 'deepseek', 'kimi'].map((id) => {
+    const im = decodePng(path.join(root, 'ui', 'assets', 'characters', id, 'idle.png'));
+    const ch = Math.round(BOX.h); const cw = Math.round((im.w / im.h) * ch);
+    return { img: resize(im, cw, ch), x: BOX.x + Math.round((BOX.w - cw) / 2) };
+  });
   fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
-  for (let r = 0; r <= 4; r++) {
-    const idx = ITEMS.map((it, i) => (it.rarity === r ? i : -1)).filter((i) => i >= 0);
-    const cols = 6; const rows = Math.ceil(idx.length / cols);
+  for (const slot of ['head', 'pet', 'fx']) {
+    const idx = ITEMS.map((it, i) => (it.slot === slot ? i : -1)).filter((i) => i >= 0);
+    const cols = 8; const rows = Math.ceil(idx.length / cols);
     const sheet = { w: cols * W, h: rows * H, px: Buffer.alloc(cols * W * rows * H * 4) };
     idx.forEach((i, n) => {
       const ox = (n % cols) * W; const oy = Math.floor(n / cols) * H;
@@ -822,10 +1188,11 @@ function preview(root, images) {
         }
       };
       for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const d = ((oy + y) * sheet.w + ox + x) * 4; sheet.px.fill(((x >> 4) + (y >> 4)) % 2 ? 236 : 248, d, d + 3); sheet.px[d + 3] = 255; }
+      const { img: char, x: cx } = chars[n % chars.length];
       if (ITEMS[i].layer === 'back') { put(images[i], 0, 0); put(char, cx, BOX.y); } else { put(char, cx, BOX.y); put(images[i], 0, 0); }
     });
     const half = resize(sheet, sheet.w / 2, sheet.h / 2);
-    fs.writeFileSync(path.join(root, 'dist', `decos-preview-${r}.png`), encodePng(half));
+    fs.writeFileSync(path.join(root, 'dist', `decos-preview-${slot}.png`), encodePng(half));
   }
   console.log('previews -> dist/decos-preview-*.png');
 }

@@ -98,9 +98,11 @@
         </div>
         <div id="decoReveal" class="hidden"></div>
       </div>
-      <div class="deco-cur">当前装扮：<b id="decoCur">无</b><button id="decoOff" class="mini">卸下</button></div>
+      <div id="decoWorn" class="box"></div>
+      <div id="decoMerge" class="box"><h4>合成（同稀有度任意 10 个 → 1 个高一级，优先用掉重复的）</h4></div>
+      <div id="decoSlotTabs" class="slot-tabs"></div>
       <div id="decoList"></div>
-      <p class="tip">点已拥有的装扮就能穿上，所有角色通用，好友也能看到。同稀有度的 10 个可以合成 1 个更高稀有度的（优先用掉重复的）。</p>
+      <p class="tip">头饰、宠物、特效各能穿一件，点已拥有的就能穿上，再点一次卸下。所有角色通用，好友也能看到。</p>
     </section>
   </div>
 
@@ -110,8 +112,9 @@
     <div id="friends"></div>
     <div id="me">
       <div id="myReveal" class="hidden"></div>
-      <div class="avatar">
-        <img id="myDeco" class="deco hidden" alt="">
+      <div id="myAvatar" class="avatar">
+        <!-- worn cosmetics: 特效 / 宠物 / 头饰 -->
+        <img class="deco hidden" alt=""><img class="deco hidden" alt=""><img class="deco hidden" alt="">
         <img id="myImg" class="hit" draggable="false" alt="">
       </div>
       <!-- Under the character so nothing covers it: typing count, then the chest bubble / countdown. -->
