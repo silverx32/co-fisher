@@ -18,9 +18,12 @@ const mb = (f) => `${(fs.statSync(f).size / 1024 / 1024).toFixed(2)} MB`;
 run('cargo', ['build', '--release', '-p', 'co-fisher', '-p', 'cofisher-server']);
 run('cargo', ['build', '--release', '-p', 'cofisher-server', '--bin', 'cofisher-relay', '--target', 'x86_64-unknown-linux-musl']);
 
-fs.rmSync(dist, { recursive: true, force: true });
 const appDir = path.join(dist, 'CoFisher');
 const relayDir = path.join(dist, 'relay');
+// Only our own outputs: dist/ may hold other things (e.g. an older copy that's running).
+for (const p of [appDir, relayDir, path.join(dist, 'CoFisher.zip'), path.join(dist, 'cofisher-relay.zip')]) {
+  fs.rmSync(p, { recursive: true, force: true });
+}
 fs.mkdirSync(appDir, { recursive: true });
 fs.mkdirSync(relayDir, { recursive: true });
 
@@ -44,3 +47,6 @@ CoFisher.exe          ${mb(path.join(appDir, 'CoFisher.exe'))}
 CoFisher.zip          ${mb(path.join(dist, 'CoFisher.zip'))}
 cofisher-relay (linux) ${mb(path.join(relayDir, 'cofisher-relay'))}
 cofisher-relay.exe    ${mb(path.join(relayDir, 'cofisher-relay.exe'))}`);
+// The in-app updater looks for an asset named exactly CoFisher.exe on the latest GitHub release.
+console.log(`
+发布更新：在 GitHub 新建 Release，tag 填 v${require('../package.json').version}，上传 dist/CoFisher/CoFisher.exe（文件名不要改）`);

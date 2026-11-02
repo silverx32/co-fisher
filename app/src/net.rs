@@ -289,8 +289,9 @@ fn friendly_error(e: &str) -> String {
 }
 
 /// `json!` helper for callers building hello payloads.
-pub fn hello_payload(id: &str, secret: &str, name: &str, character: &str, skin: Option<&Value>, count: u64, inv: Value) -> Value {
-    json!({ "id": id, "secret": secret, "name": name, "char": character, "skin": skin, "count": count, "inv": inv })
+#[allow(clippy::too_many_arguments)]
+pub fn hello_payload(id: &str, secret: &str, name: &str, character: &str, deco: &str, skin: Option<&Value>, count: u64, inv: Value) -> Value {
+    json!({ "id": id, "secret": secret, "name": name, "char": character, "deco": deco, "skin": skin, "count": count, "inv": inv })
 }
 
 #[cfg(test)]

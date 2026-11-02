@@ -1,6 +1,7 @@
 //! Persistent settings + wallet in %APPDATA%\co-fisher (same folder and field names as the
 //! earlier Electron version, so existing counts carry over).
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::{Path, PathBuf};
@@ -62,6 +63,13 @@ pub struct Config {
     pub resume: String,
     /// Physical pixels (the Electron version stored DIPs under `petPos`, which we ignore).
     pub pet_pos_phys: Option<(i32, i32)>,
+    /// Cosmetics owned: id -> copies.
+    pub decos: BTreeMap<String, u64>,
+    /// Equipped cosmetic id, "" for none.
+    #[serde(deserialize_with = "null_as_default")]
+    pub deco: String,
+    /// When the last chest was opened (Unix ms).
+    pub last_chest_ms: u64,
 }
 
 fn null_as_default<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(d: D) -> Result<T, D::Error> {
@@ -136,6 +144,11 @@ pub fn load() -> Config {
     }
     if !CHARACTERS.contains(&c.character.as_str()) {
         c.character = CHARACTERS[0].into();
+    }
+    // Unknown ids (e.g. from a newer version) are kept in the collection but can't be worn.
+    c.decos.retain(|_, n| *n > 0);
+    if !c.decos.contains_key(&c.deco) || crate::decos::get(&c.deco).is_none() {
+        c.deco.clear();
     }
     if c.host_port < 1024 {
         c.host_port = DEFAULT_PORT;

@@ -12,6 +12,7 @@
       <button data-tab="room" class="active">房间</button>
       <button data-tab="chars">角色</button>
       <button data-tab="shop">道具</button>
+      <button data-tab="decos">装扮</button>
       <button id="closePanel" title="收起">✕</button>
     </div>
 
@@ -52,6 +53,14 @@
 
       <button id="leaveBtn" class="hidden danger">断开 / 关闭房间</button>
       <p class="tip">不在一个局域网？推荐用 Steam 联机（双方打开 Steam 即可，测试 AppID 480），也可用中转服务器或 IPv6。</p>
+      <div id="updateBox" class="box">
+        <div class="box-head">
+          <h4>版本 <span id="verText"></span></h4>
+          <button id="updCheckBtn" class="mini">检查更新</button>
+        </div>
+        <div id="updText" class="tip"></div>
+        <button id="updApplyBtn" class="primary hidden">更新并重启</button>
+      </div>
       <button id="quitBtn" class="link">退出程序</button>
     </section>
 
@@ -75,6 +84,20 @@
       <div id="shopList"></div>
       <p class="tip">道具可以先囤着。好友小人下面的道具按钮，有存货时点一下就扔过去糊 TA 一脸。</p>
     </section>
+
+    <section data-pane="decos" class="hidden">
+      <div class="box chest">
+        <div class="chest-row">
+          <div class="chest-icon">🎁</div>
+          <div class="info"><b>摸鱼宝箱</b><small id="chestInfo"></small></div>
+          <button id="chestBtn" class="primary">开箱</button>
+        </div>
+        <div id="decoReveal" class="hidden"></div>
+      </div>
+      <div class="deco-cur">当前装扮：<b id="decoCur">无</b><button id="decoOff" class="mini">卸下</button></div>
+      <div id="decoList"></div>
+      <p class="tip">点已拥有的装扮就能穿上，所有角色通用，好友也能看到。同稀有度的 10 个可以合成 1 个更高稀有度的（优先用掉重复的）。</p>
+    </section>
   </div>
 
   <div id="log"></div>
@@ -82,9 +105,12 @@
   <div id="stage">
     <div id="friends"></div>
     <div id="me">
-      <div id="bubble" class="hit">⌨ <b id="myCount">0</b></div>
-      <img id="myImg" class="hit" draggable="false" alt="">
+      <div class="avatar">
+        <img id="myDeco" class="deco hidden" alt="">
+        <img id="myImg" class="hit" draggable="false" alt="">
+      </div>
       <div id="myName"></div>
+      <div id="bubble" class="hit">⌨ <b id="myCount">0</b></div>
     </div>
   </div>
 

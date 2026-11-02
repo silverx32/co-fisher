@@ -22,12 +22,14 @@ use tokio_tungstenite::tungstenite::Message;
 
 pub const PROTOCOL_VERSION: u64 = 2;
 pub const DEFAULT_PORT: u16 = 23333;
-pub const MAX_PLAYERS: usize = 8;
+pub const MAX_PLAYERS: usize = 16;
 pub const ITEM_IDS: [&str; 3] = ["tomato", "ink", "poop"];
 pub const ITEM_NAMES: [&str; 3] = ["番茄", "墨鱼汁", "屎"];
 // Built-in characters; art in ui/assets/characters/<id>/ (sliced by tools/slice-atlas.js).
 pub const CHARACTERS: [&str; 6] = ["claude", "codex", "doubao", "gemini", "deepseek", "kimi"];
 pub const NAME_MAX: usize = 12;
+/// Equipped cosmetic id (art ships with the app; the server only checks the format).
+pub const DECO_ID_MAX: usize = 32;
 pub const MAX_PAYLOAD: usize = 1024 * 1024; // custom skins travel as data URLs
 pub const SKIN_IMAGE_MAX: usize = 400 * 1024; // per image data URL length
 
@@ -66,7 +68,7 @@ impl ServerOptions {
         Self { host: "::".into(), port, password, single_room: true, max_rooms: 1, max_sockets: MAX_PLAYERS * 4, max_sockets_per_ip: MAX_PLAYERS * 4 }
     }
     pub fn relay(port: u16, password: String) -> Self {
-        Self { host: "::".into(), port, password, single_room: false, max_rooms: 500, max_sockets: 4000, max_sockets_per_ip: 16 }
+        Self { host: "::".into(), port, password, single_room: false, max_rooms: 500, max_sockets: 4000, max_sockets_per_ip: MAX_PLAYERS * 2 }
     }
 }
 
@@ -101,6 +103,7 @@ struct Player {
     character: String,
     skin: Option<Value>,
     skin_rev: u64,
+    deco: String,
     count: u64,
     typing: bool,
     inv: [u64; 3],
@@ -181,7 +184,7 @@ impl Room {
                 .map(|(id, p)| {
                     json!({
                         "id": id, "name": p.name, "char": p.character,
-                        "skinRev": if p.skin.is_some() { p.skin_rev } else { 0 },
+                        "skinRev": if p.skin.is_some() { p.skin_rev } else { 0 }, "deco": p.deco,
                         "count": p.count, "typing": p.typing, "inv": inv_json(&p.inv),
                     })
                 })
@@ -204,6 +207,14 @@ pub fn clean_name(v: &Value) -> String {
     let s: String = v.as_str().unwrap_or("").chars().filter(|c| !c.is_control()).collect();
     let s: String = s.trim().chars().take(NAME_MAX).collect();
     if s.is_empty() { "无名氏".into() } else { s }
+}
+
+/// A cosmetic id like "party-red", or "" for none.
+pub fn clean_deco(v: &Value) -> String {
+    match v.as_str() {
+        Some(s) if s.len() <= DECO_ID_MAX && s.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-') => s.to_string(),
+        _ => String::new(),
+    }
 }
 
 fn valid_image_data_url(s: &str) -> bool {
@@ -539,6 +550,7 @@ fn on_hello(
         character: msg["char"].as_str().filter(|c| CHARACTERS.contains(c)).unwrap_or(CHARACTERS[0]).to_string(),
         skin_rev: if skin.is_some() { 1 } else { 0 },
         skin,
+        deco: clean_deco(&msg["deco"]),
         count,
         typing: false,
         inv: clean_inv(&msg["inv"]),
@@ -595,6 +607,9 @@ fn on_message(shared: &Shared, conn: u64, code: &str, id: &str, msg: &Value) {
             p.name = clean_name(&msg["name"]);
             if let Some(c) = msg["char"].as_str().filter(|c| CHARACTERS.contains(c)) {
                 p.character = c.to_string();
+            }
+            if let Some(d) = msg.get("deco") {
+                p.deco = clean_deco(d);
             }
             if let Some(s) = msg.get("skin") {
                 let skin = clean_skin(s);
@@ -681,6 +696,9 @@ mod tests {
         assert!(clean_skin(&json!({ "idle": "file://x/y.png", "typing": "data:image/png;base64,AAAA" })).is_none());
         assert!(clean_skin(&json!({ "idle": "data:image/png;base64,<script>", "typing": "data:image/png;base64,AAAA" })).is_none());
         assert_eq!(clean_inv(&json!({ "tomato": 2.7, "ink": -3, "poop": "x" })), [2, 0, 0]);
+        assert_eq!(clean_deco(&json!("party-red")), "party-red");
+        assert_eq!(clean_deco(&json!("Bad Id")), "");
+        assert_eq!(clean_deco(&json!(3)), "");
         assert!(valid_id("player-0001") && !valid_id("short") && !valid_id("bad id with spaces"));
     }
 }

@@ -9,7 +9,7 @@ const { spawn } = require('child_process');
 const WebSocket = require('ws');
 
 const PROTOCOL_VERSION = 2;
-const MAX_PLAYERS = 8;
+const MAX_PLAYERS = 16;
 const PNG = 'data:image/png;base64,iVBORw0KGgo=';
 const BIN = process.env.RELAY_BIN || path.join(__dirname, '..', 'target', 'debug', process.platform === 'win32' ? 'cofisher-relay.exe' : 'cofisher-relay');
 
@@ -66,7 +66,7 @@ const id = (n) => `player-${String(n).padStart(4, '0')}`;
 test('joins, sees roster and status updates', () => withServer([], async (port) => {
   const a = client(port, { id: id(1), name: 'A' });
   await a.wait((m) => m.t === 'welcome');
-  const b = client(port, { id: id(2), name: 'B', char: 'kimi' });
+  const b = client(port, { id: id(2), name: 'B', char: 'kimi', deco: 'crown-ruby' });
   await b.wait((m) => m.t === 'welcome');
   b.send({ t: 'status', count: 10, typing: true, inv: { tomato: 2 } });
   const st = await a.wait((m) => m.t === 'state' && m.players.some((p) => p.id === id(2) && p.count === 10));
@@ -74,7 +74,11 @@ test('joins, sees roster and status updates', () => withServer([], async (port) 
   assert.equal(pb.char, 'kimi');
   assert.equal(pb.typing, true);
   assert.equal(pb.inv.tomato, 2);
+  assert.equal(pb.deco, 'crown-ruby');
+  assert.equal(st.players.find((p) => p.id === id(1)).deco, '');
   assert.deepEqual(st.players.map((p) => p.id), [id(1), id(2)], 'join order is stable');
+  b.send({ t: 'profile', name: 'B', deco: '<img>' });
+  await a.wait((m) => m.t === 'state' && m.players.some((p) => p.id === id(2) && p.deco === ''));
   a.ws.close(); b.ws.close();
 }));
 

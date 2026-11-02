@@ -1,9 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod config;
+mod decos;
 mod keyboard;
 mod net;
 mod steam;
+mod update;
 mod win;
 
 use std::collections::{HashMap, VecDeque};
@@ -22,10 +24,11 @@ use config::Config;
 use net::{Net, NetEvent};
 use steam::Steam;
 
-// Wide enough for 7 friends standing to the left of me; the empty part is click-through.
-const PET_W: f64 = 840.0;
+// Wide enough for 8 friends per row (two rows for a full room of 16) to the left of me;
+// the empty part is click-through.
+const PET_W: f64 = 910.0;
 const PET_ME_X: f64 = PET_W - 95.0; // where my character stands, from the window's left edge
-const PET_H: f64 = 620.0;
+const PET_H: f64 = 720.0;
 const TYPING_HOLD_MS: u64 = 700;
 const TICK: Duration = Duration::from_millis(25); // short so each key press shows up right away
 const STATUS_EVERY: Duration = Duration::from_millis(150);
@@ -33,6 +36,9 @@ const SAVE_EVERY: Duration = Duration::from_secs(2);
 const CURSOR_POLL: Duration = Duration::from_millis(40);
 const SPLAT_LIFETIME: Duration = Duration::from_millis(7600); // flight + stay + fade in overlay.js
 const MAX_ACTIVE_SPLATS: usize = 5;
+const UPDATE_FIRST_CHECK: Duration = Duration::from_secs(8);
+const UPDATE_EVERY: Duration = Duration::from_secs(6 * 3600);
+const UPDATE_PROGRESS_EVERY: Duration = Duration::from_millis(150);
 
 struct Item {
     id: &'static str,
@@ -78,6 +84,9 @@ struct Inner {
     last_pushed_count: Option<u64>,
     last_status: String,
     last_status_at: Instant,
+    update: Option<update::Release>,
+    update_state: Value, // last "update" event, for pages that load later
+    update_busy: bool,
 }
 
 struct AppState {
@@ -96,17 +105,31 @@ impl Inner {
     fn touch(&mut self) {
         self.dirty = true;
     }
+    fn deco_state(&self) -> Value {
+        let c = &self.config;
+        json!({
+            "owned": c.decos,
+            "equipped": c.deco,
+            "nextChestAt": c.last_chest_ms + decos::CHEST_COOLDOWN_MS,
+            "stats": decos::stats(&c.decos, &c.deco),
+        })
+    }
+    /// Sends our status to the room on the next tick instead of waiting for the throttle.
+    fn status_soon(&mut self) {
+        self.last_status.clear();
+        self.last_status_at = Instant::now() - STATUS_EVERY;
+    }
 }
 
 fn hello_for(app: &AppHandle) -> Value {
     let st = app.state::<Arc<AppState>>();
     let i = st.inner.lock().unwrap();
     let c = &i.config;
-    net::hello_payload(&c.id, &c.secret, &c.name, &c.character, i.skin.as_ref(), c.count, c.inv.to_json())
+    net::hello_payload(&c.id, &c.secret, &c.name, &c.character, &c.deco, i.skin.as_ref(), c.count, c.inv.to_json())
 }
 
 fn profile_msg(i: &Inner, with_skin: bool) -> Value {
-    let mut m = json!({ "t": "profile", "name": i.config.name, "char": i.config.character });
+    let mut m = json!({ "t": "profile", "name": i.config.name, "char": i.config.character, "deco": i.config.deco });
     if with_skin {
         m["skin"] = i.skin.clone().unwrap_or(Value::Null);
     }
@@ -181,6 +204,11 @@ async fn init(state: St<'_>) -> Result<Value, ()> {
         "steam": state.steam.status(false),
         "players": i.players,
         "skins": i.skins,
+        "decos": decos::catalogue(),
+        "decoState": i.deco_state(),
+        "version": update::CURRENT,
+        "update": i.update_state,
+        "justUpdated": std::env::args().any(|a| a == UPDATED_ARG),
     }))
 }
 
@@ -366,12 +394,68 @@ fn buy(app: AppHandle, state: St<'_>, item: String, qty: f64) -> Value {
     *i.config.inv.get_mut(idx) += qty;
     i.touch();
     // Tell friends right away (next tick) so the new stock shows up without waiting.
-    i.last_status.clear();
-    i.last_status_at = Instant::now() - STATUS_EVERY;
+    i.status_soon();
     let w = i.wallet();
     drop(i);
     let _ = app.emit("wallet", &w);
     json!({ "ok": true, "wallet": w })
+}
+
+#[tauri::command]
+fn open_chest(app: AppHandle, state: St<'_>) -> Value {
+    let mut i = state.inner.lock().unwrap();
+    let now = keyboard::now_ms();
+    let last = i.config.last_chest_ms;
+    // (A clock turned back doesn't lock the chest.)
+    if last <= now && now < last + decos::CHEST_COOLDOWN_MS {
+        return json!({ "ok": false, "error": "宝箱还在冷却中" });
+    }
+    if i.config.count < decos::CHEST_COST {
+        return json!({ "ok": false, "error": format!("点数不够，还差 {}", decos::CHEST_COST - i.config.count) });
+    }
+    i.config.count -= decos::CHEST_COST;
+    i.config.last_chest_ms = now;
+    let got = decos::roll_chest();
+    let n = i.config.decos.entry(got.id.clone()).or_default();
+    *n += 1;
+    let is_new = *n == 1;
+    i.touch();
+    i.status_soon();
+    let (w, d) = (i.wallet(), i.deco_state());
+    drop(i);
+    let _ = app.emit("wallet", &w);
+    json!({ "ok": true, "item": got.id, "isNew": is_new, "wallet": w, "decoState": d })
+}
+
+#[tauri::command]
+fn merge_decos(state: St<'_>, rarity: usize, confirm: bool) -> Value {
+    if rarity + 1 >= decos::RARITIES.len() {
+        return json!({ "ok": false, "error": "最高稀有度不能再合成了" });
+    }
+    let mut i = state.inner.lock().unwrap();
+    let equipped = i.config.deco.clone();
+    let Some((_, lose)) = decos::merge_plan(&i.config.decos, rarity, &equipped) else {
+        return json!({ "ok": false, "error": format!("需要 {} 个同稀有度的装扮", decos::MERGE_COUNT) });
+    };
+    if lose > 0 && !confirm {
+        return json!({ "ok": false, "confirm": true, "lose": lose });
+    }
+    let got = decos::merge(&mut i.config.decos, rarity, &equipped).expect("planned above");
+    let is_new = i.config.decos.get(&got.id) == Some(&1);
+    i.touch();
+    json!({ "ok": true, "item": got.id, "isNew": is_new, "decoState": i.deco_state() })
+}
+
+#[tauri::command]
+fn equip_deco(state: St<'_>, id: String) -> Value {
+    let mut i = state.inner.lock().unwrap();
+    if !id.is_empty() && (decos::get(&id).is_none() || !i.config.decos.contains_key(&id)) {
+        return json!({ "ok": false, "error": "还没有这个装扮" });
+    }
+    i.config.deco = id;
+    i.touch();
+    state.net.send(&profile_msg(&i, false));
+    json!({ "ok": true, "decoState": i.deco_state() })
 }
 
 #[tauri::command]
@@ -400,6 +484,126 @@ fn throw_item(app: AppHandle, state: St<'_>, item: String, target: String) -> Va
     drop(i);
     let _ = app.emit("wallet", &w);
     json!({ "ok": true, "wallet": w })
+}
+
+// ---------------------------------------------------------------- updates
+
+const UPDATED_ARG: &str = "--updated";
+
+fn set_update_state(app: &AppHandle, mut v: Value) {
+    v["current"] = update::CURRENT.into();
+    app.state::<Arc<AppState>>().inner.lock().unwrap().update_state = v.clone();
+    let _ = app.emit("update", v);
+}
+
+/// `manual`: the user pressed the button, so report "up to date" and errors too.
+async fn check_update(app: AppHandle, manual: bool) {
+    {
+        let st = app.state::<Arc<AppState>>();
+        let mut i = st.inner.lock().unwrap();
+        if i.update_busy {
+            return;
+        }
+        i.update_busy = true;
+    }
+    if manual {
+        set_update_state(&app, json!({ "state": "checking" }));
+    }
+    let result = tauri::async_runtime::spawn_blocking(update::check).await.unwrap_or_else(|e| Err(e.to_string()));
+    let found = result.as_ref().ok().cloned().flatten();
+    {
+        let st = app.state::<Arc<AppState>>();
+        let mut i = st.inner.lock().unwrap();
+        i.update_busy = false;
+        if result.is_ok() {
+            i.update = found.clone();
+        }
+    }
+    match (result, found) {
+        (_, Some(rel)) => {
+            set_update_state(&app, json!({ "state": "available", "version": rel.version, "notes": rel.notes, "page": rel.page }));
+            if !manual {
+                let _ = app.emit("toast", format!("发现新版本 v{}，点小人 → 房间 → 更新", rel.version));
+            }
+        }
+        (Ok(_), None) if manual => set_update_state(&app, json!({ "state": "latest" })),
+        (Err(e), _) if manual => set_update_state(&app, json!({ "state": "error", "text": e })),
+        _ => {}
+    }
+}
+
+#[tauri::command]
+async fn check_for_update(app: AppHandle) -> Result<(), ()> {
+    check_update(app, true).await;
+    Ok(())
+}
+
+#[tauri::command]
+fn apply_update(app: AppHandle, state: St<'_>) -> Value {
+    let rel = {
+        let mut i = state.inner.lock().unwrap();
+        if i.update_busy {
+            return json!({ "ok": false, "error": "正在处理，请稍等" });
+        }
+        let Some(rel) = i.update.clone() else { return json!({ "ok": false, "error": "没有可用的新版本" }) };
+        i.update_busy = true;
+        rel
+    };
+    let a = app.clone();
+    tauri::async_runtime::spawn(async move {
+        set_update_state(&a, json!({ "state": "downloading", "version": rel.version, "done": 0, "total": null }));
+        let (a2, rel2) = (a.clone(), rel.clone());
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            let mut last = Instant::now() - UPDATE_PROGRESS_EVERY;
+            update::install(&rel2, |done, total| {
+                if last.elapsed() >= UPDATE_PROGRESS_EVERY {
+                    last = Instant::now();
+                    set_update_state(&a2, json!({ "state": "downloading", "version": rel2.version, "done": done, "total": total }));
+                }
+            })
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        match result {
+            Ok(exe) => {
+                set_update_state(&a, json!({ "state": "restarting", "version": rel.version }));
+                restart_into(&a, exe);
+            }
+            Err(e) => {
+                a.state::<Arc<AppState>>().inner.lock().unwrap().update_busy = false;
+                set_update_state(&a, json!({ "state": "error", "text": e, "version": rel.version, "page": rel.page }));
+            }
+        }
+    });
+    json!({ "ok": true })
+}
+
+/// Starts the freshly installed exe and quits. The single-instance lock is released first,
+/// otherwise the new process would just hand its arguments to us and exit.
+fn restart_into(app: &AppHandle, exe: std::path::PathBuf) {
+    let a = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        config::save(&a.state::<Arc<AppState>>().inner.lock().unwrap().config);
+        tauri_plugin_single_instance::destroy(&a);
+        match std::process::Command::new(&exe).arg(UPDATED_ARG).spawn() {
+            Ok(_) => {
+                a.cleanup_before_exit();
+                std::process::exit(0);
+            }
+            Err(e) => {
+                a.state::<Arc<AppState>>().inner.lock().unwrap().update_busy = false;
+                set_update_state(&a, json!({ "state": "error", "text": format!("已更新，但重启失败（{e}），请手动重新打开") }));
+            }
+        }
+    });
+}
+
+async fn update_loop(app: AppHandle) {
+    tokio::time::sleep(UPDATE_FIRST_CHECK).await;
+    loop {
+        check_update(app.clone(), false).await;
+        tokio::time::sleep(UPDATE_EVERY).await;
+    }
 }
 
 #[tauri::command]
@@ -443,6 +647,7 @@ fn clean_player(p: &Value) -> Option<Value> {
         "id": id,
         "name": p["name"].as_str().unwrap_or("").chars().take(NAME_MAX).collect::<String>(),
         "char": character,
+        "deco": p["deco"].as_str().filter(|d| decos::get(d).is_some()).unwrap_or(""),
         "skinRev": non_neg(&p["skinRev"]),
         "count": non_neg(&p["count"]),
         "typing": p["typing"].as_bool().unwrap_or(false),
@@ -832,6 +1037,9 @@ fn main() {
             last_pushed_count: None,
             last_status: String::new(),
             last_status_at: Instant::now(),
+            update: None,
+            update_state: json!({ "state": "idle", "current": update::CURRENT }),
+            update_busy: false,
         }),
         net: Net::new(ev_tx),
         steam: Steam::new(invite_tx.clone()),
@@ -851,10 +1059,12 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             init, set_profile, set_skin, clear_skin, host, join, leave,
             steam_status, steam_rooms, steam_invite,
-            buy, throw_item, hit_rects, overlay_idle, quit
+            buy, throw_item, open_chest, merge_decos, equip_deco,
+            check_for_update, apply_update, hit_rects, overlay_idle, quit
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            update::cleanup();
             create_windows(&handle)?;
             create_tray(&handle)?;
             if let Err(e) = keyboard::start() {
@@ -885,6 +1095,7 @@ fn main() {
             });
             tauri::async_runtime::spawn(resume_last_session(handle.clone()));
             tauri::async_runtime::spawn(tick_loop(handle.clone()));
+            tauri::async_runtime::spawn(update_loop(handle.clone()));
             tauri::async_runtime::spawn(cursor_loop(handle));
             Ok(())
         })

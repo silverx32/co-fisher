@@ -23,6 +23,7 @@ label { display: block; margin: 4px 0; color: #555; }
 
 /* ---------- panel */
 #panel {
+  position: relative; z-index: 5; /* above hats sticking out of the characters below */
   width: 368px; max-height: 330px; overflow-y: auto;
   background: rgba(255, 255, 255, .97); border-radius: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.25);
   padding: 8px 12px 10px;
@@ -70,42 +71,83 @@ button.mini { padding: 1px 7px; font-size: 11px; border-radius: 6px; }
 /* ---------- friends */
 #stage { display: flex; align-items: flex-end; gap: 6px; }
 /* row-reverse: the first friend to join stands right next to me, later ones further left */
-#friends { display: flex; flex-direction: row-reverse; align-items: flex-end; gap: 4px; margin-bottom: 18px; }
+/* At most 8 per row (window width); a full room wraps into a second row above the first. */
+#friends {
+  display: flex; flex-direction: row-reverse; flex-wrap: wrap-reverse; align-items: flex-end;
+  gap: 20px 4px; max-width: 716px; margin-bottom: 40px;
+}
 .friend {
   width: 86px; position: relative; text-align: center;
   background: rgba(255,255,255,.82); border-radius: 12px; padding: 2px 2px 3px;
   box-shadow: 0 2px 8px rgba(0,0,0,.18); transition: transform .12s;
 }
 .friend:hover { background: #fff; }
-.friend img { width: 62px; height: 68px; object-fit: contain; display: block; margin: 0 auto; pointer-events: none; }
+.friend .avatar { width: 62px; height: 68px; margin: 0 auto; }
+.friend .fimg { width: 62px; height: 68px; object-fit: contain; display: block; pointer-events: none; }
 .friend .fname { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 2px; }
-.friend .fcount { position: absolute; top: 2px; right: 3px; background: #ffb347; color: #fff; font-size: 10px; border-radius: 8px; padding: 0 5px; font-weight: bold; }
-.friend .ftyping { position: absolute; top: 2px; left: 4px; font-size: 11px; opacity: 0; }
+.friend .fcount { z-index: 3; position: absolute; top: 2px; right: 3px; background: #ffb347; color: #fff; font-size: 10px; border-radius: 8px; padding: 0 5px; font-weight: bold; }
+.friend .ftyping { z-index: 3; position: absolute; top: 2px; left: 4px; font-size: 11px; opacity: 0; }
 .friend.typing .ftyping { opacity: 1; animation: pulse .4s infinite alternate; }
 .factions { display: flex; gap: 2px; margin-top: 2px; }
 .fbtn { flex: 1; padding: 1px 0 0; border-radius: 7px; display: flex; flex-direction: column; align-items: center; line-height: 1.05; font-size: 15px; }
 .fbtn small { font-size: 10px; color: #888; }
 .fbtn:not(:disabled):hover { background: #fff3e0; border-color: #ffb347; }
 .fbtn:disabled { opacity: .35; filter: grayscale(1); }
-.friend .fsplat { position: absolute; inset: 10px 0 0; font-size: 40px; pointer-events: none; animation: fsplat 2s forwards; }
+.friend .fsplat { z-index: 4; position: absolute; inset: 10px 0 0; font-size: 40px; pointer-events: none; animation: fsplat 2s forwards; }
 .friend.shake { animation: shake .4s; }
 @keyframes pulse { to { transform: scale(1.25); } }
 @keyframes shake { 20%, 60% { transform: translateX(-4px) rotate(-4deg); } 40%, 80% { transform: translateX(4px) rotate(4deg); } }
 @keyframes fsplat { 0% { transform: scale(2.4); opacity: 0; } 15% { transform: scale(1); opacity: 1; } 80% { opacity: 1; } 100% { opacity: 0; } }
 
 /* ---------- me */
-#me { position: relative; width: 170px; display: flex; flex-direction: column; align-items: center; }
-#myImg { width: 150px; height: 165px; object-fit: contain; cursor: grab; filter: drop-shadow(0 3px 4px rgba(0,0,0,.2)); }
+/* padding-top leaves room for hats, which stick out above the character */
+#me { position: relative; width: 170px; display: flex; flex-direction: column; align-items: center; padding-top: 42px; }
+#myImg { display: block; width: 150px; height: 165px; object-fit: contain; cursor: grab; filter: drop-shadow(0 3px 4px rgba(0,0,0,.2)); }
 #myImg:active { cursor: grabbing; }
 #bubble {
-  background: #fff; border-radius: 12px; padding: 2px 10px; box-shadow: 0 2px 8px rgba(0,0,0,.2);
-  font-size: 13px; position: relative; margin-bottom: -6px; z-index: 1;
+  background: #fff; border-radius: 12px; padding: 1px 10px; box-shadow: 0 2px 8px rgba(0,0,0,.2);
+  font-size: 13px; position: relative; margin-top: 3px; z-index: 1;
 }
-#bubble::after { content: ""; position: absolute; left: 50%; bottom: -6px; margin-left: -6px; border: 6px solid transparent; border-bottom: 0; border-top-color: #fff; }
 #bubble b { color: #e8742b; }
 #bubble.bump { animation: bump .12s; }
 @keyframes bump { 50% { transform: scale(1.12); } }
-#myName { background: rgba(43,43,58,.75); color: #fff; font-size: 11px; border-radius: 8px; padding: 0 8px; margin-top: -4px; }
+#myName { background: rgba(43,43,58,.75); color: #fff; font-size: 11px; border-radius: 8px; padding: 0 8px; margin-top: -4px; position: relative; z-index: 3; }
+
+/* ---------- cosmetics: one picture covering the character box, widened 20% each side and 25% up */
+.avatar { position: relative; }
+.avatar > img:not(.deco) { position: relative; z-index: 1; }
+.deco { position: absolute; left: -20%; top: -25%; width: 140%; height: 125%; pointer-events: none; z-index: 2; }
+.deco.back { z-index: 0; }
+.deco.r3 { filter: drop-shadow(0 0 3px rgba(255, 190, 60, .75)); }
+.deco.r4 { animation: mythic 2.6s ease-in-out infinite; }
+@keyframes mythic { 0%, 100% { filter: drop-shadow(0 0 3px rgba(255, 120, 200, .6)); } 50% { filter: drop-shadow(0 0 8px rgba(120, 200, 255, .9)) brightness(1.08); } }
+
+.chest-row { display: flex; align-items: center; gap: 8px; }
+.chest-icon { font-size: 30px; }
+.chest-row .info { flex: 1; }
+.chest-row .info small { display: block; color: #999; }
+#decoReveal { display: flex; align-items: center; gap: 10px; margin-top: 6px; padding: 6px; border-radius: 10px; background: #fafbff; animation: reveal .45s; }
+#decoReveal img { width: 64px; height: 64px; object-fit: contain; }
+#decoReveal .new { background: #ff6b6b; color: #fff; font-size: 10px; border-radius: 6px; padding: 0 5px; margin-left: 4px; }
+@keyframes reveal { 0% { transform: scale(.6); opacity: 0; } 70% { transform: scale(1.06); } 100% { transform: none; opacity: 1; } }
+.deco-cur { display: flex; align-items: center; gap: 6px; margin: 4px 2px 6px; }
+.deco-cur button { margin-left: auto; }
+.deco-sec { margin: 8px 0 4px; }
+.deco-head { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-bottom: 4px; }
+.deco-head b { font-size: 13px; }
+.deco-head small { color: #999; }
+.deco-head button { margin-left: auto; }
+.deco-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+.tile { position: relative; border: 2px solid transparent; border-radius: 8px; background: #f5f6fa; cursor: pointer; aspect-ratio: 1; }
+.tile img { width: 100%; height: 100%; object-fit: contain; display: block; padding: 3px; }
+.tile:not(.owned) { cursor: default; }
+.tile:not(.owned) img { filter: brightness(0); opacity: .15; }
+.tile.owned:hover { background: #eef2ff; }
+.tile.equipped { border-color: #5b8cff; background: #eef2ff; }
+.tile small { position: absolute; right: 3px; bottom: 1px; font-size: 10px; color: #666; }
+.tabs button.badge::after { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #ff6b6b; margin-left: 3px; vertical-align: top; }
+#updText { white-space: pre-line; max-height: 80px; overflow-y: auto; }
+#updApplyBtn { width: 100%; margin-top: 6px; }
 
 #log { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; pointer-events: none; }
 .logline { background: rgba(43,43,58,.82); color: #fff; font-size: 12px; border-radius: 10px; padding: 2px 10px; max-width: 340px; animation: logfade 6s forwards; }

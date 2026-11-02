@@ -22,6 +22,10 @@ const S = {
   steam: { available: false, appId: 480 },
   steamRooms: [],
   steamLoading: false,
+  decos: { items: [], rarities: [] }, // catalogue
+  decoState: { owned: {}, equipped: '', nextChestAt: 0, stats: [] },
+  version: '',
+  update: { state: 'idle' },
 };
 
 // Each built-in character has one idle frame and three typing frames. Every key press flashes
@@ -79,9 +83,30 @@ function makeTapper(render) {
 const myTap = makeTapper(() => renderMe());
 const friendTaps = new Map(); // player id -> { tapper, lastCount }
 
+// Cosmetics: one picture on top of (layer "front") or behind ("back") the character.
+const decoById = new Map();
+const DECO_W = 336; const DECO_H = 330; // size of every cosmetic picture (tools/gen-decos.js)
+// An <img> showing just the item (cropped to its box), for the collection and reveal.
+function decoIcon(d) {
+  const img = el('img');
+  img.src = `assets/decos/${d.id}.png`;
+  img.draggable = false;
+  const [x0, y0, x1, y1] = d.box?.length === 4 ? d.box : [0, 0, DECO_W, DECO_H];
+  img.style.objectViewBox = `inset(${y0}px ${DECO_W - x1}px ${DECO_H - y1}px ${x0}px)`;
+  return img;
+}
+function setDeco(img, id) {
+  const d = decoById.get(id);
+  img.classList.toggle('hidden', !d);
+  if (!d) return;
+  setSrc(img, `assets/decos/${d.id}.png`);
+  img.className = `deco ${d.layer} r${d.rarity}`;
+}
+
 // ---------------------------------------------------------------- me
 function renderMe() {
   setSrc($('#myImg'), srcFor(S.me.char, S.me.skin, myTap.frame));
+  setDeco($('#myDeco'), S.decoState.equipped);
   $('#myName').textContent = S.me.name;
 }
 
@@ -99,6 +124,7 @@ function renderWallet() {
   $('#shopCount').textContent = c;
   $('#shopTotal').textContent = `累计敲击 ${S.wallet.total}`;
   renderShop();
+  renderChest();
   renderFriendButtons();
 }
 
@@ -125,18 +151,23 @@ function renderFriends() {
         b.addEventListener('click', () => throwAt(p.id, item, node));
         actions.append(b);
       }
-      node.append(el('span', 'ftyping', '⌨'), el('span', 'fcount'), el('img'), el('div', 'fname'), actions);
-      node.querySelector('img').draggable = false;
+      const avatar = el('div', 'avatar');
+      const img = el('img', 'fimg');
+      img.draggable = false;
+      avatar.append(el('img', 'deco hidden'), img);
+      node.append(el('span', 'ftyping', '⌨'), el('span', 'fcount'), avatar, el('div', 'fname'), actions);
       box.append(node);
       friendEls.set(p.id, node);
     }
     node.classList.toggle('typing', !!p.typing);
     node.querySelector('.fcount').textContent = p.count;
     node.querySelector('.fname').textContent = p.name;
-    node.title = `${p.name}\n点数 ${p.count}\n🍅${p.inv?.tomato ?? 0} 🦑${p.inv?.ink ?? 0} 💩${p.inv?.poop ?? 0}`;
+    const deco = decoById.get(p.deco);
+    node.title = `${p.name}\n点数 ${p.count}\n🍅${p.inv?.tomato ?? 0} 🦑${p.inv?.ink ?? 0} 💩${p.inv?.poop ?? 0}${deco ? `\n装扮：${deco.name}` : ''}`;
+    setDeco(node.querySelector('.deco'), p.deco);
     let ft = friendTaps.get(p.id);
     if (!ft) {
-      const img = node.querySelector('img');
+      const img = node.querySelector('.fimg');
       const id = p.id;
       const tapper = makeTapper(() => {
         const cur = S.players.find((x) => x.id === id);
@@ -148,7 +179,7 @@ function renderFriends() {
     // Friends report their count in batches (~every 150ms); each increase shows as one tap.
     if (p.count > ft.lastCount) ft.tapper.tap();
     ft.lastCount = p.count;
-    setSrc(node.querySelector('img'), srcFor(p.char, skinOf(p), ft.tapper.frame));
+    setSrc(node.querySelector('.fimg'), srcFor(p.char, skinOf(p), ft.tapper.frame));
   }
   renderFriendButtons();
 }
@@ -488,6 +519,177 @@ function renderShop() {
   }
 }
 
+// ---------------------------------------------------------------- cosmetics
+const decoTiles = new Map(); // id -> { tile, count }
+const decoSections = []; // per rarity: { head, merge, confirm }
+
+function buildDecos() {
+  const list = $('#decoList');
+  S.decos.rarities.forEach((r, ri) => {
+    const sec = el('div', 'deco-sec');
+    const head = el('div', 'deco-head');
+    const name = el('b', null, r.name);
+    name.style.color = r.color;
+    const info = el('small');
+    head.append(name, info);
+    const next = S.decos.rarities[ri + 1];
+    const merge = next ? el('button', 'mini', `合成 → ${next.name}`) : null;
+    if (merge) {
+      merge.addEventListener('click', () => mergeDecos(ri));
+      head.append(merge);
+    }
+    const grid = el('div', 'deco-grid');
+    for (const d of S.decos.items.filter((x) => x.rarity === ri)) {
+      const tile = el('div', 'tile');
+      const img = decoIcon(d);
+      img.loading = 'lazy';
+      const count = el('small');
+      tile.append(img, count);
+      tile.addEventListener('click', () => equipDeco(d.id));
+      grid.append(tile);
+      decoTiles.set(d.id, { tile, count, d });
+    }
+    sec.append(head, grid);
+    list.append(sec);
+    decoSections.push({ info, merge, confirm: false, timer: null });
+  });
+}
+
+function renderDecos() {
+  const ds = S.decoState;
+  for (const [id, { tile, count, d }] of decoTiles) {
+    const n = ds.owned[id] || 0;
+    tile.classList.toggle('owned', n > 0);
+    tile.classList.toggle('equipped', ds.equipped === id);
+    tile.title = n > 0 ? `${d.name}（${S.decos.rarities[d.rarity].name}）× ${n}${ds.equipped === id ? '\n点击卸下' : '\n点击穿上'}` : '？？？';
+    count.textContent = n > 1 ? `×${n}` : '';
+  }
+  decoSections.forEach((sec, ri) => {
+    const st = ds.stats[ri] || {};
+    sec.info.textContent = `${st.kinds || 0}/${st.total || 0} 种 · 共 ${st.owned || 0} 个`;
+    if (sec.merge && !sec.confirm) {
+      sec.merge.disabled = !st.canMerge;
+      sec.merge.title = st.lose ? `会用掉 ${st.lose} 个只有一件的装扮` : '';
+    }
+  });
+  const cur = decoById.get(ds.equipped);
+  $('#decoCur').textContent = cur ? cur.name : '无';
+  $('#decoCur').style.color = cur ? S.decos.rarities[cur.rarity].color : '';
+  $('#decoOff').classList.toggle('hidden', !cur);
+}
+
+function renderChest() {
+  if (!S.decos.chestCost) return;
+  const wait = S.decoState.nextChestAt - Date.now();
+  const cooling = wait > 0 && wait <= S.decos.chestCooldownMs;
+  const btn = $('#chestBtn');
+  btn.disabled = cooling || S.wallet.count < S.decos.chestCost;
+  const odds = S.decos.rarities.map((r) => `${r.name} ${r.odds}%`).join('  ');
+  btn.title = `概率：${odds}`;
+  if (cooling) {
+    const sec = Math.ceil(wait / 1000);
+    btn.textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  } else {
+    btn.textContent = '开箱';
+  }
+  $('#chestInfo').textContent = `${S.decos.chestCost} 点开一次，每 ${S.decos.chestCooldownMs / 60000} 分钟一次`;
+}
+
+function revealDeco(id, isNew, how) {
+  const d = decoById.get(id);
+  if (!d) return;
+  const r = S.decos.rarities[d.rarity];
+  const box = $('#decoReveal');
+  const img = decoIcon(d);
+  const text = el('div');
+  const name = el('b', null, d.name);
+  name.style.color = r.color;
+  text.append(el('div', 'tip', how), name);
+  if (isNew) text.append(el('span', 'new', 'NEW'));
+  text.append(el('div', null, `${r.name}${isNew ? '' : ' · 重复，可用来合成'}`));
+  box.replaceChildren(img, text);
+  box.classList.remove('hidden');
+  box.style.animation = 'none';
+  void box.offsetWidth;
+  box.style.animation = '';
+  toast(`获得${r.name}装扮：${d.name}`);
+}
+
+$('#chestBtn').addEventListener('click', async () => {
+  const btn = $('#chestBtn');
+  btn.disabled = true;
+  const r = await api.openChest();
+  if (!r.ok) { renderChest(); return toast(r.error); }
+  S.wallet = r.wallet;
+  S.decoState = r.decoState;
+  renderWallet();
+  renderDecos();
+  revealDeco(r.item, r.isNew, '宝箱开出了');
+});
+
+async function mergeDecos(rarity) {
+  const sec = decoSections[rarity];
+  const r = await api.mergeDecos(rarity, sec.confirm);
+  clearTimeout(sec.timer);
+  if (r.confirm) {
+    // Using up an item that's the only one of its kind needs a second click.
+    sec.confirm = true;
+    sec.merge.textContent = `会用掉 ${r.lose} 个独有的，再点确认`;
+    sec.timer = setTimeout(() => { sec.confirm = false; sec.merge.textContent = `合成 → ${S.decos.rarities[rarity + 1].name}`; renderDecos(); }, 4000);
+    return;
+  }
+  sec.confirm = false;
+  sec.merge.textContent = `合成 → ${S.decos.rarities[rarity + 1].name}`;
+  if (!r.ok) return toast(r.error);
+  S.decoState = r.decoState;
+  renderDecos();
+  revealDeco(r.item, r.isNew, '合成得到了');
+}
+
+async function equipDeco(id) {
+  if (!S.decoState.owned[id]) return;
+  const r = await api.equipDeco(S.decoState.equipped === id ? '' : id);
+  if (!r.ok) return toast(r.error);
+  S.decoState = r.decoState;
+  renderDecos();
+  renderMe();
+}
+
+$('#decoOff').addEventListener('click', async () => {
+  const r = await api.equipDeco('');
+  S.decoState = r.decoState;
+  renderDecos();
+  renderMe();
+});
+
+// ---------------------------------------------------------------- updates
+function renderUpdate() {
+  const u = S.update || {};
+  $('#verText').textContent = `v${S.version}`;
+  const pct = u.total ? ` ${Math.floor((u.done / u.total) * 100)}%` : u.done ? ` ${(u.done / 1048576).toFixed(1)} MB` : '';
+  const text = {
+    checking: '正在检查更新…',
+    latest: '已经是最新版',
+    available: `发现新版本 v${u.version}${u.notes ? `\n${u.notes}` : ''}`,
+    downloading: `正在下载 v${u.version}…${pct}`,
+    restarting: '下载完成，正在重启…',
+    error: `更新失败：${u.text || ''}${u.page ? `\n可以手动下载：${u.page}` : ''}`,
+  }[u.state] || '';
+  $('#updText').textContent = text;
+  $('#updApplyBtn').classList.toggle('hidden', u.state !== 'available' && !(u.state === 'error' && u.version));
+  $('#updApplyBtn').textContent = u.state === 'error' ? '重试' : `更新到 v${u.version}`;
+  const busy = ['checking', 'downloading', 'restarting'].includes(u.state);
+  $('#updCheckBtn').disabled = busy;
+  $('#updApplyBtn').disabled = busy;
+  document.querySelector('.tabs button[data-tab="room"]').classList.toggle('badge', u.state === 'available');
+}
+
+$('#updCheckBtn').addEventListener('click', () => api.checkUpdate());
+$('#updApplyBtn').addEventListener('click', async () => {
+  const r = await api.applyUpdate();
+  if (!r.ok) toast(r.error);
+});
+
 // ---------------------------------------------------------------- log / toast
 function log(text) {
   const box = $('#log');
@@ -572,6 +774,7 @@ api.on('skin', ({ id, rev, skin }) => {
   if (skin) S.skins[id] = { rev, skin }; else delete S.skins[id];
   renderFriends();
 });
+api.on('update', (u) => { S.update = u; if (S.me) renderUpdate(); });
 api.on('log', log);
 api.on('toast', toast);
 api.on('hit', showFriendHit);
@@ -587,7 +790,9 @@ api.on('steam-joined', (d) => {
   Object.assign(S, {
     me: d.me, wallet: d.wallet, items: d.items, characters: d.characters, maxPlayers: d.maxPlayers,
     players: d.players, skins: d.skins, net: d.net.state, server: d.server, steam: d.steam || d.server?.steam,
+    decos: d.decos, decoState: d.decoState, version: d.version, update: d.update,
   });
+  for (const x of d.decos.items) decoById.set(x.id, x);
   $('#nameInput').value = d.me.name;
   $('#hostPort').value = d.hostPort;
   $('#joinAddr').value = d.joinAddress;
@@ -596,10 +801,15 @@ api.on('steam-joined', (d) => {
   $('#hostPwd').value = d.hostPassword;
   preloadFrames();
   buildShop();
+  buildDecos();
+  renderDecos();
+  renderUpdate();
+  setInterval(renderChest, 1000);
   renderMe();
   renderWallet();
   renderChars();
   renderFriends();
   renderRoom();
   if (S.steam?.available && S.net === 'offline') refreshSteamRooms();
+  if (d.justUpdated) toast(`已更新到 v${d.version}`);
 })();

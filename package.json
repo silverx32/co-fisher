@@ -1,6 +1,6 @@
 {
   "name": "co-fisher",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "联机桌面宠物：敲键盘攒点数，换道具糊好友一脸",
   "private": true,
   "scripts": {
@@ -8,6 +8,7 @@
     "test": "cargo test -p cofisher-server -p co-fisher && cargo build -p cofisher-server && node --test test/*.test.js",
     "slice": "node tools/slice-atlas.js",
     "icon": "node tools/make-icon.js claude",
+    "decos": "node tools/gen-decos.js",
     "release": "node tools/release.js"
   },
   "devDependencies": {
