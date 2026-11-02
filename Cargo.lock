@@ -488,7 +488,7 @@ dependencies = [
 
 [[package]]
 name = "co-fisher"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "cofisher-server",
  "futures-util",

@@ -104,6 +104,8 @@ struct Player {
     skin: Option<Value>,
     skin_rev: u64,
     deco: String,
+    /// Whether their cosmetics chest can be opened right now (shown to the room; the timer stays private).
+    chest: bool,
     count: u64,
     typing: bool,
     inv: [u64; 3],
@@ -184,7 +186,7 @@ impl Room {
                 .map(|(id, p)| {
                     json!({
                         "id": id, "name": p.name, "char": p.character,
-                        "skinRev": if p.skin.is_some() { p.skin_rev } else { 0 }, "deco": p.deco,
+                        "skinRev": if p.skin.is_some() { p.skin_rev } else { 0 }, "deco": p.deco, "chest": p.chest,
                         "count": p.count, "typing": p.typing, "inv": inv_json(&p.inv),
                     })
                 })
@@ -551,6 +553,7 @@ fn on_hello(
         skin_rev: if skin.is_some() { 1 } else { 0 },
         skin,
         deco: clean_deco(&msg["deco"]),
+        chest: false,
         count,
         typing: false,
         inv: clean_inv(&msg["inv"]),
@@ -599,6 +602,7 @@ fn on_message(shared: &Shared, conn: u64, code: &str, id: &str, msg: &Value) {
             p.budget -= granted as f64;
             p.count = if next < p.count { next } else { p.count + granted };
             p.typing = msg["typing"].as_bool().unwrap_or(false);
+            p.chest = msg["chest"].as_bool().unwrap_or(false);
             p.inv = clean_inv(&msg["inv"]);
             room.dirty = true;
         }

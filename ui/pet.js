@@ -155,12 +155,15 @@ function renderFriends() {
       const img = el('img', 'fimg');
       img.draggable = false;
       avatar.append(el('img', 'deco hidden'), img);
-      node.append(el('span', 'ftyping', '⌨'), el('span', 'fcount'), avatar, el('div', 'fname'), actions);
+      const chest = el('span', 'fchest hidden', '🎁');
+      chest.title = 'TA 的宝箱可以开了';
+      node.append(el('span', 'ftyping', '⌨'), chest, avatar, el('div', 'fcount'), el('div', 'fname'), actions);
       box.append(node);
       friendEls.set(p.id, node);
     }
     node.classList.toggle('typing', !!p.typing);
-    node.querySelector('.fcount').textContent = p.count;
+    node.querySelector('.fcount').textContent = `⌨ ${p.count}`;
+    node.querySelector('.fchest').classList.toggle('hidden', !p.chest);
     node.querySelector('.fname').textContent = p.name;
     const deco = decoById.get(p.deco);
     node.title = `${p.name}\n点数 ${p.count}\n🍅${p.inv?.tomato ?? 0} 🦑${p.inv?.ink ?? 0} 💩${p.inv?.poop ?? 0}${deco ? `\n装扮：${deco.name}` : ''}`;
@@ -578,21 +581,78 @@ function renderDecos() {
   $('#decoOff').classList.toggle('hidden', !cur);
 }
 
+let chestOpening = false;
+
+// Same rule as decos::chest_cooling on the Rust side (a clock turned back doesn't lock it).
+function chestWait() {
+  const wait = S.decoState.nextChestAt - Date.now();
+  return wait > 0 && wait <= S.decos.chestCooldownMs ? wait : 0;
+}
+
+const mmss = (ms) => {
+  const sec = Math.ceil(ms / 1000);
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+};
+
+// The panel's 开箱 button and the bubble next to my character.
 function renderChest() {
   if (!S.decos.chestCost) return;
-  const wait = S.decoState.nextChestAt - Date.now();
-  const cooling = wait > 0 && wait <= S.decos.chestCooldownMs;
-  const btn = $('#chestBtn');
-  btn.disabled = cooling || S.wallet.count < S.decos.chestCost;
+  const wait = chestWait();
+  const cost = S.decos.chestCost;
+  const short = Math.max(0, cost - S.wallet.count);
   const odds = S.decos.rarities.map((r) => `${r.name} ${r.odds}%`).join('  ');
+  const btn = $('#chestBtn');
+  btn.disabled = chestOpening || wait > 0 || short > 0;
   btn.title = `概率：${odds}`;
-  if (cooling) {
-    const sec = Math.ceil(wait / 1000);
-    btn.textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  btn.textContent = wait ? mmss(wait) : '开箱';
+  $('#chestInfo').textContent = `${cost} 点开一次，每 ${S.decos.chestCooldownMs / 60000} 分钟一次`;
+
+  const b = $('#myChest');
+  b.classList.remove('hidden', 'ready', 'poor', 'cd');
+  if (wait) {
+    b.classList.add('cd');
+    b.textContent = `⏳ ${mmss(wait)}`;
+    b.title = '宝箱冷却中';
   } else {
-    btn.textContent = '开箱';
+    b.classList.add(short ? 'poor' : 'ready');
+    b.textContent = `🎁 -${cost}`;
+    b.title = short ? `还差 ${short} 点才能开宝箱` : `点一下花 ${cost} 点开宝箱\n概率：${odds}`;
   }
-  $('#chestInfo').textContent = `${S.decos.chestCost} 点开一次，每 ${S.decos.chestCooldownMs / 60000} 分钟一次`;
+}
+
+async function openChest() {
+  if (chestOpening || chestWait() || S.wallet.count < S.decos.chestCost) return;
+  chestOpening = true;
+  renderChest();
+  try {
+    const r = await api.openChest();
+    if (!r.ok) return toast(r.error);
+    S.wallet = r.wallet;
+    S.decoState = r.decoState;
+    renderWallet();
+    renderDecos();
+    revealDeco(r.item, r.isNew, '宝箱开出了');
+  } finally {
+    chestOpening = false;
+    renderChest();
+  }
+}
+
+// What the chest gave, popping up above my character for a few seconds.
+let myRevealTimer;
+function showMyReveal(d, r, isNew) {
+  const box = $('#myReveal');
+  const name = el('b', null, d.name);
+  name.style.color = r.color;
+  const text = el('div', null);
+  text.append(name, el('div', 'tip', isNew ? `${r.name} · NEW` : `${r.name} · 重复`));
+  box.replaceChildren(decoIcon(d), text);
+  box.classList.remove('hidden');
+  box.style.animation = 'none';
+  void box.offsetWidth;
+  box.style.animation = '';
+  clearTimeout(myRevealTimer);
+  myRevealTimer = setTimeout(() => box.classList.add('hidden'), 4000);
 }
 
 function revealDeco(id, isNew, how) {
@@ -612,20 +672,11 @@ function revealDeco(id, isNew, how) {
   box.style.animation = 'none';
   void box.offsetWidth;
   box.style.animation = '';
-  toast(`获得${r.name}装扮：${d.name}`);
+  showMyReveal(d, r, isNew);
 }
 
-$('#chestBtn').addEventListener('click', async () => {
-  const btn = $('#chestBtn');
-  btn.disabled = true;
-  const r = await api.openChest();
-  if (!r.ok) { renderChest(); return toast(r.error); }
-  S.wallet = r.wallet;
-  S.decoState = r.decoState;
-  renderWallet();
-  renderDecos();
-  revealDeco(r.item, r.isNew, '宝箱开出了');
-});
+$('#chestBtn').addEventListener('click', openChest);
+$('#myChest').addEventListener('click', openChest);
 
 async function mergeDecos(rarity) {
   const sec = decoSections[rarity];
@@ -670,12 +721,18 @@ function renderUpdate() {
   const text = {
     checking: '正在检查更新…',
     latest: '已经是最新版',
-    available: `发现新版本 v${u.version}${u.notes ? `\n${u.notes}` : ''}`,
+    available: `当前 v${S.version} → 最新 v${u.version}（点下面的按钮才会更新）`,
     downloading: `正在下载 v${u.version}…${pct}`,
     restarting: '下载完成，正在重启…',
     error: `更新失败：${u.text || ''}${u.page ? `\n可以手动下载：${u.page}` : ''}`,
   }[u.state] || '';
   $('#updText').textContent = text;
+  // The release notes stay visible while there's a version to install (also after a failed try).
+  const notes = u.version && ['available', 'downloading', 'error'].includes(u.state) ? (u.notes || '').trim() : '';
+  $('#updNotes').classList.toggle('hidden', !notes);
+  $('#updNotesText').textContent = notes;
+  $('#myUpdate').classList.toggle('hidden', u.state !== 'available');
+  $('#myUpdate').title = `有新版本 v${u.version}，点击查看更新内容`;
   $('#updApplyBtn').classList.toggle('hidden', u.state !== 'available' && !(u.state === 'error' && u.version));
   $('#updApplyBtn').textContent = u.state === 'error' ? '重试' : `更新到 v${u.version}`;
   const busy = ['checking', 'downloading', 'restarting'].includes(u.state);
@@ -685,6 +742,14 @@ function renderUpdate() {
 }
 
 $('#updCheckBtn').addEventListener('click', () => api.checkUpdate());
+$('#myUpdate').addEventListener('click', () => {
+  openPanel('room');
+  const box = $('#updateBox');
+  box.scrollIntoView({ block: 'nearest' });
+  box.classList.remove('flash');
+  void box.offsetWidth;
+  box.classList.add('flash');
+});
 $('#updApplyBtn').addEventListener('click', async () => {
   const r = await api.applyUpdate();
   if (!r.ok) toast(r.error);

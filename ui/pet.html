@@ -59,6 +59,10 @@
           <button id="updCheckBtn" class="mini">检查更新</button>
         </div>
         <div id="updText" class="tip"></div>
+        <div id="updNotes" class="hidden">
+          <b>更新内容</b>
+          <div id="updNotesText"></div>
+        </div>
         <button id="updApplyBtn" class="primary hidden">更新并重启</button>
       </div>
       <button id="quitBtn" class="link">退出程序</button>
@@ -105,12 +109,20 @@
   <div id="stage">
     <div id="friends"></div>
     <div id="me">
+      <div id="myReveal" class="hidden"></div>
       <div class="avatar">
         <img id="myDeco" class="deco hidden" alt="">
         <img id="myImg" class="hit" draggable="false" alt="">
       </div>
-      <div id="myName"></div>
-      <div id="bubble" class="hit">⌨ <b id="myCount">0</b></div>
+      <!-- Under the character so nothing covers it: typing count, then the chest bubble / countdown. -->
+      <div class="me-stats">
+        <div id="bubble" class="hit">⌨ <b id="myCount">0</b></div>
+        <div id="myChest" class="chest-bubble hit hidden"></div>
+      </div>
+      <div class="me-name">
+        <div id="myName"></div>
+        <button id="myUpdate" class="hit hidden" title="有新版本，点击查看更新内容">🆕 新版本</button>
+      </div>
     </div>
   </div>
 

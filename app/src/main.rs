@@ -37,7 +37,7 @@ const CURSOR_POLL: Duration = Duration::from_millis(40);
 const SPLAT_LIFETIME: Duration = Duration::from_millis(7600); // flight + stay + fade in overlay.js
 const MAX_ACTIVE_SPLATS: usize = 5;
 const UPDATE_FIRST_CHECK: Duration = Duration::from_secs(8);
-const UPDATE_EVERY: Duration = Duration::from_secs(6 * 3600);
+const UPDATE_EVERY: Duration = Duration::from_secs(3600);
 const UPDATE_PROGRESS_EVERY: Duration = Duration::from_millis(150);
 
 struct Item {
@@ -405,9 +405,7 @@ fn buy(app: AppHandle, state: St<'_>, item: String, qty: f64) -> Value {
 fn open_chest(app: AppHandle, state: St<'_>) -> Value {
     let mut i = state.inner.lock().unwrap();
     let now = keyboard::now_ms();
-    let last = i.config.last_chest_ms;
-    // (A clock turned back doesn't lock the chest.)
-    if last <= now && now < last + decos::CHEST_COOLDOWN_MS {
+    if decos::chest_cooling(i.config.last_chest_ms, now) {
         return json!({ "ok": false, "error": "宝箱还在冷却中" });
     }
     if i.config.count < decos::CHEST_COST {
@@ -511,19 +509,22 @@ async fn check_update(app: AppHandle, manual: bool) {
     }
     let result = tauri::async_runtime::spawn_blocking(update::check).await.unwrap_or_else(|e| Err(e.to_string()));
     let found = result.as_ref().ok().cloned().flatten();
-    {
+    let known = {
         let st = app.state::<Arc<AppState>>();
         let mut i = st.inner.lock().unwrap();
         i.update_busy = false;
+        let known = i.update.as_ref().map(|r| r.version.clone());
         if result.is_ok() {
             i.update = found.clone();
         }
-    }
+        known
+    };
     match (result, found) {
         (_, Some(rel)) => {
             set_update_state(&app, json!({ "state": "available", "version": rel.version, "notes": rel.notes, "page": rel.page }));
-            if !manual {
-                let _ = app.emit("toast", format!("发现新版本 v{}，点小人 → 房间 → 更新", rel.version));
+            // Hourly checks only announce a version once; it stays visible next to the name.
+            if !manual && known.as_deref() != Some(rel.version.as_str()) {
+                let _ = app.emit("toast", format!("发现新版本 v{}，点名字旁的「新版本」查看", rel.version));
             }
         }
         (Ok(_), None) if manual => set_update_state(&app, json!({ "state": "latest" })),
@@ -651,6 +652,7 @@ fn clean_player(p: &Value) -> Option<Value> {
         "skinRev": non_neg(&p["skinRev"]),
         "count": non_neg(&p["count"]),
         "typing": p["typing"].as_bool().unwrap_or(false),
+        "chest": p["chest"].as_bool().unwrap_or(false),
         "inv": inv,
     }))
 }
@@ -948,7 +950,8 @@ async fn tick_loop(app: AppHandle) {
                 json!({ "typing": typing, "count": i.config.count, "total": i.config.total, "inv": i.config.inv.to_json() })
             });
             let status = (i.last_status_at.elapsed() >= STATUS_EVERY).then(|| {
-                json!({ "t": "status", "count": i.config.count, "typing": typing, "inv": i.config.inv.to_json() })
+                let chest = decos::chest_ready(i.config.last_chest_ms, now, i.config.count);
+                json!({ "t": "status", "count": i.config.count, "typing": typing, "inv": i.config.inv.to_json(), "chest": chest })
             });
             if i.dirty && i.last_save.elapsed() >= SAVE_EVERY {
                 // Throttled rather than debounced, so continuous typing still saves.

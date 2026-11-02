@@ -21,7 +21,8 @@ Co-Fisher 宝塔 Docker 部署
    查看日志：docker compose logs --tail=100 -f
    重启：docker compose restart
    停止：docker compose stop
-   更新：替换 cofisher-relay 后执行 docker compose up -d --build
+   更新：把新的 cofisher-docker.zip 上传到本目录，解压并覆盖（包里没有 .env，密码不变），
+         然后执行 docker compose up -d --build
    改密码：修改 .env 后执行 docker compose up -d
 
 容器限制：最多100个房间、128MB内存、0.5核CPU；可按实际负载调整。

@@ -14,11 +14,11 @@
 
 ### Docker（宝塔）
 
-先运行 `npm run release` 生成 Linux 服务端，再将 `deploy/docker/` 中的文件和
-`dist/relay/cofisher-relay` 放到服务器同一目录。复制 `.env.example` 为 `.env`，
+先运行 `npm run release`，把生成的 `dist/cofisher-docker.zip`（`deploy/docker/` 的文件 + Linux 版中转程序）
+上传到服务器目录并解压。复制 `.env.example` 为 `.env`，
 填写独立的 `RELAY_PASSWORD` 后执行 `docker compose up -d --build`。
 放行 TCP **15880**，客户端填写 `服务器公网IP:15880`。容器内部端口仍为 23333。
-详细步骤见 [部署说明](deploy/docker/部署说明.txt)。
+详细步骤见 [部署说明](deploy/docker/部署说明.txt)。以后更新：上传新的 `cofisher-docker.zip` 解压覆盖，再执行 `docker compose up -d --build`。
 
 ### 直接安装为系统服务
 

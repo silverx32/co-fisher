@@ -12,6 +12,17 @@ pub const CHEST_COST: u64 = 3000;
 pub const CHEST_COOLDOWN_MS: u64 = 30 * 60 * 1000;
 pub const MERGE_COUNT: u64 = 10;
 
+/// Still waiting since the chest was last opened at `last` (Unix ms)? A clock turned back
+/// doesn't lock the chest.
+pub fn chest_cooling(last: u64, now: u64) -> bool {
+    last <= now && now < last + CHEST_COOLDOWN_MS
+}
+
+/// Can be opened right now: cooled down and enough points.
+pub fn chest_ready(last: u64, now: u64, count: u64) -> bool {
+    !chest_cooling(last, now) && count >= CHEST_COST
+}
+
 pub struct Rarity {
     pub name: &'static str,
     pub color: &'static str,
