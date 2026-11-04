@@ -19,6 +19,7 @@
     buy: (item, qty) => invoke('buy', { item, qty }),
     throwItem: (item, target) => invoke('throw_item', { item, target }),
     openChest: () => invoke('open_chest'),
+    openBossChest: () => invoke('open_boss_chest'),
     mergeDecos: (rarity, confirm) => invoke('merge_decos', { rarity, confirm }),
     equipDeco: (slot, id) => invoke('equip_deco', { slot, id }),
     checkUpdate: () => invoke('check_for_update'),

@@ -50,6 +50,23 @@ const THROW_WINDOW: Duration = Duration::from_secs(1);
 // Per player, so one person can't keep the whole room covered.
 const GROUP_COOLDOWN: Duration = Duration::from_secs(60);
 const PARTY_COOLDOWN: Duration = Duration::from_secs(10);
+/// Boss HP per player in the fight (key presses), before the boss's own toughness.
+pub const BOSS_HP_PER_PLAYER: u64 = 1500;
+/// After a boss is beaten, the next one appears this much later.
+pub const BOSS_COOLDOWN: Duration = Duration::from_secs(20 * 60);
+/// Share of the boss's HP (%) a player must have dealt to get a chest when it's beaten.
+pub const BOSS_MIN_SHARE: u64 = 3;
+/// (emoji, name, toughness in %), fought in turn.
+const BOSSES: [(&str, &str, u64); 8] = [
+    ("🐛", "Bug 虫", 80),
+    ("⏰", "Deadline 怪", 100),
+    ("📧", "邮件海怪", 100),
+    ("📊", "周报巨魔", 110),
+    ("🤖", "会议机器人", 100),
+    ("🧟", "加班僵尸", 120),
+    ("🐲", "需求变更龙", 130),
+    ("👔", "老板的凝视", 150),
+];
 const BROADCAST_INTERVAL: Duration = Duration::from_millis(100);
 const HEARTBEAT: Duration = Duration::from_secs(10);
 const DEAD_AFTER: Duration = Duration::from_secs(25);
@@ -103,14 +120,22 @@ pub struct ServerOptions {
     pub max_rooms: usize,
     pub max_sockets: usize,
     pub max_sockets_per_ip: usize,
+    pub boss_hp: u64,
+    pub boss_cooldown: Duration,
 }
 
 impl ServerOptions {
     pub fn host_mode(port: u16, password: String) -> Self {
-        Self { host: "::".into(), port, password, single_room: true, max_rooms: 1, max_sockets: MAX_PLAYERS * 4, max_sockets_per_ip: MAX_PLAYERS * 4 }
+        Self {
+            host: "::".into(), port, password, single_room: true, max_rooms: 1, max_sockets: MAX_PLAYERS * 4, max_sockets_per_ip: MAX_PLAYERS * 4,
+            boss_hp: BOSS_HP_PER_PLAYER, boss_cooldown: BOSS_COOLDOWN,
+        }
     }
     pub fn relay(port: u16, password: String) -> Self {
-        Self { host: "::".into(), port, password, single_room: false, max_rooms: 500, max_sockets: 4000, max_sockets_per_ip: MAX_PLAYERS * 2 }
+        Self {
+            host: "::".into(), port, password, single_room: false, max_rooms: 500, max_sockets: 4000, max_sockets_per_ip: MAX_PLAYERS * 2,
+            boss_hp: BOSS_HP_PER_PLAYER, boss_cooldown: BOSS_COOLDOWN,
+        }
     }
 }
 
@@ -172,6 +197,61 @@ impl Player {
     }
 }
 
+/// The room's shared boss: everyone's typing hurts it. Beaten, the next one appears after a
+/// cooldown (once someone's in the room).
+#[derive(Default)]
+struct Boss {
+    /// Bosses this room has beaten; picks the current / next one from BOSSES.
+    beaten: u64,
+    hp: u64,
+    max_hp: u64,
+    /// Players its HP is made for: the most that have been in the room at once during this
+    /// fight. Coming and going (under any id) never raises it; MAX_PLAYERS caps it.
+    shares: u64,
+    /// While none is up: when the next one may appear (`None`: right away).
+    next_at: Option<Instant>,
+    /// Damage dealt to the current one, per player id. Kept after a win for the last fight's ranking.
+    damage: HashMap<String, u64>,
+}
+
+impl Boss {
+    fn kind(&self) -> (&'static str, &'static str, u64) {
+        BOSSES[(self.beaten % BOSSES.len() as u64) as usize]
+    }
+
+    /// HP for each player in the fight.
+    fn share(&self, hp_per_player: u64) -> u64 {
+        (hp_per_player.saturating_mul(self.kind().2) / 100).max(1)
+    }
+
+    fn spawn(&mut self, players: usize, hp_per_player: u64) {
+        self.shares = players as u64;
+        self.max_hp = self.share(hp_per_player).saturating_mul(self.shares);
+        self.hp = self.max_hp;
+        self.next_at = None;
+        self.damage.clear();
+    }
+
+    /// Someone joined and the room now has `players`: a new high adds a share for each extra
+    /// head, so the fight takes about the same typing per person.
+    fn crowd(&mut self, players: usize, hp_per_player: u64) {
+        let players = players as u64;
+        if self.hp > 0 && players > self.shares {
+            let more = self.share(hp_per_player).saturating_mul(players - self.shares);
+            self.shares = players;
+            self.max_hp = self.max_hp.saturating_add(more);
+            self.hp = self.hp.saturating_add(more);
+        }
+    }
+
+    fn json(&self, now: Instant) -> Value {
+        let (emoji, name, _) = self.kind();
+        // "in": ms until the next one appears; while none is up, emoji / name / level are the next one's.
+        let wait = if self.hp > 0 { 0 } else { self.next_at.map_or(0, |t| t.saturating_duration_since(now).as_millis() as u64) };
+        json!({ "emoji": emoji, "name": name, "level": self.beaten + 1, "hp": self.hp, "max": self.max_hp, "in": wait, "minPct": BOSS_MIN_SHARE })
+    }
+}
+
 #[derive(Default)]
 struct Room {
     players: HashMap<String, Player>,
@@ -182,6 +262,7 @@ struct Room {
     /// Empty rooms are kept for a while (with their `known` ids) so a former roommate can't
     /// recreate the room and claim someone else's id.
     emptied_at: Option<Instant>,
+    boss: Boss,
 }
 
 #[derive(Default)]
@@ -245,10 +326,46 @@ impl Room {
                         "id": id, "name": p.name, "char": p.character,
                         "skinRev": if p.skin.is_some() { p.skin_rev } else { 0 }, "deco": p.decos.first().map_or("", |d| d.as_str()), "decos": p.decos, "chest": p.chest,
                         "dnd": p.dnd, "count": p.count, "typing": p.typing, "inv": inv_json(&p.inv),
+                        "dmg": self.boss.damage.get(id.as_str()).copied().unwrap_or(0),
                     })
                 })
                 .collect(),
         )
+    }
+
+    fn spawn_boss_if_due(&mut self, hp_per_player: u64, now: Instant) {
+        if self.boss.hp > 0 || self.players.is_empty() || self.boss.next_at.is_some_and(|t| now < t) {
+            return;
+        }
+        self.boss.spawn(self.players.len(), hp_per_player);
+        self.dirty = true;
+    }
+
+    /// Typing hurts the boss. Returns the "bossDown" message when this finishes it off.
+    fn hit_boss(&mut self, id: &str, keys: u64, cooldown: Duration, now: Instant) -> Option<Value> {
+        let b = &mut self.boss;
+        if keys == 0 || b.hp == 0 {
+            return None;
+        }
+        let dealt = keys.min(b.hp);
+        b.hp -= dealt;
+        *b.damage.entry(id.to_string()).or_default() += dealt;
+        if b.hp > 0 {
+            return None;
+        }
+        let (emoji, name, _) = b.kind();
+        b.beaten += 1;
+        b.next_at = Some(now + cooldown);
+        let killer_name = self.players.get(id).map_or("", |p| p.name.as_str());
+        // A chest for everyone here who dealt at least BOSS_MIN_SHARE % of its HP. Clients roll
+        // it themselves (the last hit's is luckier).
+        let damage: Map<String, Value> = self.players.keys().map(|p| (p.clone(), b.damage.get(p).copied().unwrap_or(0).into())).collect();
+        let earned = |d: u64| d.saturating_mul(100) >= b.max_hp.saturating_mul(BOSS_MIN_SHARE);
+        let rewarded: Vec<&String> = damage.iter().filter(|(_, d)| earned(d.as_u64().unwrap_or(0))).map(|(p, _)| p).collect();
+        Some(json!({
+            "t": "bossDown", "emoji": emoji, "name": name, "killer": id, "killerName": killer_name,
+            "rewarded": rewarded, "damage": damage, "total": b.max_hp, "minPct": BOSS_MIN_SHARE,
+        }))
     }
 }
 
@@ -407,11 +524,13 @@ async fn accept_loop(shared: Arc<Shared>, listener: TcpListener, mut shutdown: w
 }
 
 fn flush(shared: &Shared, prune: bool) {
+    let now = Instant::now();
     let mut st = shared.state.lock().unwrap();
     for room in st.rooms.values_mut() {
+        room.spawn_boss_if_due(shared.opts.boss_hp, now);
         if room.dirty {
             room.dirty = false;
-            let msg = json!({ "t": "state", "players": room.snapshot() });
+            let msg = json!({ "t": "state", "players": room.snapshot(), "boss": room.boss.json(now) });
             room.broadcast(&msg);
         }
     }
@@ -649,6 +768,7 @@ fn on_hello(
     let name = p.name.clone();
     let skin_msg = p.skin.as_ref().map(|s| json!({ "t": "skin", "id": id, "rev": p.skin_rev, "skin": s }));
     room.players.insert(id.clone(), p);
+    room.boss.crowd(room.players.len(), opts.boss_hp);
     if let Some(m) = skin_msg {
         room.broadcast(&m);
     }
@@ -682,6 +802,10 @@ fn on_message(shared: &Shared, conn: u64, code: &str, id: &str, msg: &Value) {
             p.dnd = msg["dnd"].as_bool().unwrap_or(false);
             p.set_inv(msg);
             room.dirty = true;
+            // The key presses just counted hit the room's boss.
+            if let Some(down) = room.hit_boss(id, granted, shared.opts.boss_cooldown, now) {
+                room.broadcast(&down);
+            }
         }
         Some("profile") => {
             let p = room.players.get_mut(id).unwrap();
@@ -819,5 +943,23 @@ mod tests {
         assert_eq!(clean_worn(&json!({ "deco": "party-red" })), ["party-red"]);
         assert!(clean_worn(&json!({ "deco": "" })).is_empty());
         assert!(valid_id("player-0001") && !valid_id("short") && !valid_id("bad id with spaces"));
+    }
+
+    #[test]
+    fn boss_hp_follows_the_most_players_at_once() {
+        let mut b = Boss::default();
+        b.spawn(2, 100); // Bug 虫 is 80% tough
+        assert_eq!((b.hp, b.max_hp), (160, 160));
+        // Someone leaves and comes back (or someone new takes their place): no more HP.
+        for players in [1, 2, 1, 2, 2] {
+            b.crowd(players, 100);
+        }
+        assert_eq!((b.hp, b.max_hp), (160, 160));
+        b.hp = 100;
+        b.crowd(4, 100); // a new high: two more shares
+        assert_eq!((b.hp, b.max_hp, b.shares), (260, 320, 4));
+        b.hp = 0; // beaten: joining doesn't revive it
+        b.crowd(5, 100);
+        assert_eq!((b.hp, b.max_hp), (0, 320));
     }
 }

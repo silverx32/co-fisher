@@ -58,7 +58,7 @@ const ITEMS: [Item; ITEM_COUNT] = [
     Item { id: "poop", name: "屎", emoji: "💩", cost: 200, desc: "" },
     Item { id: "rain", name: "番茄雨", emoji: "🌧️", cost: 1000, desc: "糊房间里所有人" },
     Item { id: "firework", name: "烟花", emoji: "🎆", cost: 300, desc: "全房间一起看" },
-    Item { id: "umbrella", name: "雨伞", emoji: "☂️", cost: 150, desc: "自动挡下一次攻击" },
+    Item { id: "umbrella", name: "雨伞", emoji: "☂️", cost: 500, desc: "自动挡下一次攻击" },
 ];
 /// A server whose welcome doesn't list its items (v2.2) knows the first three.
 const OLD_SERVER_ITEMS: usize = 3;
@@ -88,6 +88,8 @@ struct Inner {
     throw_seq: u64,
     /// Items the room's server supports.
     server_items: Vec<&'static str>,
+    /// The room's boss as the page shows it (null when there's none).
+    boss: Value,
     /// Umbrella blocks heard about on this connection (see `blocked` in the server).
     blocks_seen: u64,
     splat_times: VecDeque<Instant>,
@@ -129,6 +131,8 @@ impl Inner {
             "owned": c.decos,
             "worn": c.worn,
             "nextChestAt": c.last_chest_ms + decos::CHEST_COOLDOWN_MS,
+            "bossChests": c.boss_chests,
+            "luckyChests": c.lucky_chests,
             "stats": decos::stats(&c.decos, &self.worn()),
         })
     }
@@ -228,6 +232,7 @@ async fn init(state: St<'_>) -> Result<Value, ()> {
         "server": server,
         "steam": state.steam.status(false),
         "players": i.players,
+        "boss": i.boss,
         "skins": i.skins,
         "decos": decos::catalogue(),
         "decoState": i.deco_state(),
@@ -396,10 +401,12 @@ async fn leave(app: AppHandle, state: St<'_>) -> Result<Value, ()> {
         let mut i = state.inner.lock().unwrap();
         i.players.clear();
         i.skins.clear();
+        i.boss = Value::Null;
         i.config.resume.clear();
         i.touch();
     }
     let _ = app.emit("players", Vec::<Value>::new());
+    let _ = app.emit("boss", Value::Null);
     Ok(json!({ "ok": true, "server": server_status(&state).await }))
 }
 
@@ -438,16 +445,52 @@ fn open_chest(app: AppHandle, state: St<'_>) -> Value {
     }
     i.config.count -= decos::CHEST_COST;
     i.config.last_chest_ms = now;
-    let got = decos::roll_chest();
-    let n = i.config.decos.entry(got.id.clone()).or_default();
-    *n += 1;
-    let is_new = *n == 1;
-    i.touch();
-    i.status_soon();
-    let (w, d) = (i.wallet(), i.deco_state());
+    let (prize, w, d) = award(&mut i, decos::roll_chest(false));
     drop(i);
     let _ = app.emit("wallet", &w);
-    json!({ "ok": true, "item": got.id, "isNew": is_new, "wallet": w, "decoState": d })
+    json!({ "ok": true, "prize": prize, "wallet": w, "decoState": d })
+}
+
+/// Opens a chest won from a boss: free, no cooldown; lucky ones (last hit) first.
+#[tauri::command]
+fn open_boss_chest(app: AppHandle, state: St<'_>) -> Value {
+    let mut i = state.inner.lock().unwrap();
+    let lucky = i.config.lucky_chests > 0;
+    if lucky {
+        i.config.lucky_chests -= 1;
+    } else if i.config.boss_chests > 0 {
+        i.config.boss_chests -= 1;
+    } else {
+        return json!({ "ok": false, "error": "没有 Boss 宝箱了" });
+    }
+    let (prize, w, d) = award(&mut i, decos::roll_chest(lucky));
+    drop(i);
+    let _ = app.emit("wallet", &w);
+    json!({ "ok": true, "prize": prize, "lucky": lucky, "wallet": w, "decoState": d })
+}
+
+/// Puts what a chest gave into the collection or the item stock. Returns the prize, wallet and
+/// collection for the page.
+fn award(i: &mut Inner, prize: decos::Prize) -> (Value, Value, Value) {
+    let prize = match prize {
+        decos::Prize::Deco(d) => {
+            let n = i.config.decos.entry(d.id.clone()).or_default();
+            *n += 1;
+            json!({ "kind": "deco", "id": d.id, "rarity": d.rarity, "isNew": *n == 1 })
+        }
+        decos::Prize::Items(rarity, items) => {
+            for (id, qty) in items {
+                if let Some(k) = item_index(id) {
+                    *i.config.inv.get_mut(k) += qty;
+                }
+            }
+            let items: serde_json::Map<String, Value> = items.iter().map(|(id, qty)| (id.to_string(), (*qty).into())).collect();
+            json!({ "kind": "items", "rarity": rarity, "items": items })
+        }
+    };
+    i.touch();
+    i.status_soon(); // new items show up in the room
+    (prize, i.wallet(), i.deco_state())
 }
 
 #[tauri::command]
@@ -681,6 +724,28 @@ fn non_neg(v: &Value) -> u64 {
     v.as_f64().filter(|n| n.is_finite() && *n > 0.0).map_or(0, |n| n.floor().min(1e12) as u64)
 }
 
+/// A string from the network, at most `max` characters.
+fn clip(v: &Value, max: usize) -> String {
+    v.as_str().unwrap_or("").chars().take(max).collect()
+}
+
+/// A list of player ids from the network.
+fn id_list(v: &Value) -> Vec<String> {
+    let list = v.as_array().into_iter().flatten().filter_map(Value::as_str);
+    list.take(MAX_PLAYERS).map(|s| s.chars().take(64).collect()).collect()
+}
+
+/// The room's boss as the page shows it; null from servers without one.
+fn clean_boss(b: &Value) -> Value {
+    if !b.is_object() {
+        return Value::Null;
+    }
+    json!({
+        "emoji": clip(&b["emoji"], 8), "name": clip(&b["name"], 16), "level": non_neg(&b["level"]),
+        "hp": non_neg(&b["hp"]), "max": non_neg(&b["max"]), "in": non_neg(&b["in"]), "minPct": non_neg(&b["minPct"]),
+    })
+}
+
 /// Everything from the network is untrusted (the host could be anyone): normalise before the UI sees it.
 fn clean_player(p: &Value) -> Option<Value> {
     let id: String = p["id"].as_str()?.chars().take(64).collect();
@@ -696,6 +761,7 @@ fn clean_player(p: &Value) -> Option<Value> {
         "typing": p["typing"].as_bool().unwrap_or(false),
         "chest": p["chest"].as_bool().unwrap_or(false),
         "dnd": p["dnd"].as_bool().unwrap_or(false),
+        "dmg": non_neg(&p["dmg"]),
         "inv": inv,
     }))
 }
@@ -754,8 +820,9 @@ fn on_net_event(app: &AppHandle, ev: NetEvent) {
             }
             let _ = app.emit("server-items", items);
         }
-        NetEvent::State(list) => {
+        NetEvent::State(list, boss) => {
             let players: Vec<Value> = list.iter().take(MAX_PLAYERS).filter_map(clean_player).collect();
+            let boss = clean_boss(&boss);
             let gone: Vec<String> = {
                 let mut i = state.inner.lock().unwrap();
                 let ids: Vec<&str> = players.iter().filter_map(|p| p["id"].as_str()).collect();
@@ -764,6 +831,7 @@ fn on_net_event(app: &AppHandle, ev: NetEvent) {
                     i.skins.remove(g);
                 }
                 i.players = players.clone();
+                i.boss = boss.clone();
                 gone
             };
             for id in gone {
@@ -771,7 +839,9 @@ fn on_net_event(app: &AppHandle, ev: NetEvent) {
             }
             state.steam.update_lobby_meta(None, Some(players.len()));
             let _ = app.emit("players", players);
+            let _ = app.emit("boss", boss);
         }
+        NetEvent::BossDown(msg) => on_boss_down(app, &state, &msg),
         NetEvent::Skin(msg) => {
             let Some(id) = msg["id"].as_str().map(|s| s.chars().take(64).collect::<String>()) else { return };
             let skin = clean_skin(&msg["skin"]);
@@ -810,16 +880,11 @@ fn on_net_event(app: &AppHandle, ev: NetEvent) {
 fn on_hit(app: &AppHandle, state: &AppState, raw: &Value) {
     let Some(idx) = raw["item"].as_str().and_then(item_index) else { return };
     let (item, kind) = (&ITEMS[idx], ITEM_KINDS[idx]);
-    let text = |v: &Value, max: usize| v.as_str().unwrap_or("").chars().take(max).collect::<String>();
-    let ids = |v: &Value| -> Vec<String> {
-        let list = v.as_array().into_iter().flatten().filter_map(Value::as_str);
-        list.take(MAX_PLAYERS).map(|s| s.chars().take(64).collect()).collect()
-    };
-    let (from, from_name) = (text(&raw["from"], 64), text(&raw["fromName"], NAME_MAX));
-    let (to, to_name) = (text(&raw["to"], 64), text(&raw["toName"], NAME_MAX));
+    let (from, from_name) = (clip(&raw["from"], 64), clip(&raw["fromName"], NAME_MAX));
+    let (to, to_name) = (clip(&raw["to"], 64), clip(&raw["toName"], NAME_MAX));
     // v2.2 servers only relay single throws, without these lists.
     let (targets, blocked) = match raw.get("targets") {
-        Some(t) => (ids(t), ids(&raw["blocked"])),
+        Some(t) => (id_list(t), id_list(&raw["blocked"])),
         None => (vec![to.clone()], Vec::new()),
     };
     let me = state.inner.lock().unwrap().config.id.clone();
@@ -851,6 +916,48 @@ fn on_hit(app: &AppHandle, state: &AppState, raw: &Value) {
     }
     let _ = app.emit("log", line);
     let _ = app.emit("hit", hit);
+}
+
+/// `part` of `total` as "2.5%" / "34%".
+fn percent(part: u64, total: u64) -> String {
+    let p = part as f64 * 100.0 / total.max(1) as f64;
+    if p < 10.0 { format!("{p:.1}%") } else { format!("{p:.0}%") }
+}
+
+/// The room beat its boss: everyone there who did enough of the damage gets a boss chest, a
+/// lucky one for the last hit.
+fn on_boss_down(app: &AppHandle, state: &AppState, msg: &Value) {
+    let (emoji, name) = (clip(&msg["emoji"], 8), clip(&msg["name"], 16));
+    let (killer, killer_name) = (clip(&msg["killer"], 64), clip(&msg["killerName"], NAME_MAX));
+    let me = state.inner.lock().unwrap().config.id.clone();
+    let lucky = killer == me;
+    let won = id_list(&msg["rewarded"]).contains(&me);
+    let share = percent(non_neg(&msg["damage"][me.as_str()]), non_neg(&msg["total"]));
+    let need = non_neg(&msg["minPct"]);
+    if won {
+        let mut i = state.inner.lock().unwrap();
+        if lucky {
+            i.config.lucky_chests += 1;
+        } else {
+            i.config.boss_chests += 1;
+        }
+        i.touch();
+        let d = i.deco_state();
+        drop(i);
+        let _ = app.emit("deco-state", d);
+    }
+    let quiet = !show_effect(app, state, &json!({ "item": "firework", "title": format!("⚔️ 打败了 {emoji} {name}！") }));
+    let mut line = match (won, lucky) {
+        (true, true) => format!("⚔️ 你补了最后一刀，打败了 {emoji} {name}！伤害 {share}，得到一个幸运 Boss 宝箱（稀有度更高）"),
+        (true, false) => format!("⚔️ {killer_name} 补了最后一刀，打败了 {emoji} {name}！你的伤害 {share}，得到一个 Boss 宝箱"),
+        (false, true) => format!("⚔️ 你补了最后一刀，打败了 {emoji} {name}！可惜伤害只有 {share}，要 {need}% 以上才有宝箱"),
+        (false, false) => format!("⚔️ {killer_name} 打败了 {emoji} {name}！你的伤害只有 {share}，要 {need}% 以上才有宝箱"),
+    };
+    if quiet {
+        line.push_str("（免打扰）");
+    }
+    let _ = app.emit("log", line);
+    let _ = app.emit("boss-down", json!({ "killerName": killer_name }));
 }
 
 /// The server used up one of our umbrellas blocking an attack; returns how many are left.
@@ -1181,6 +1288,7 @@ fn main() {
             pending_throws: HashMap::new(),
             throw_seq: 0,
             server_items: ITEM_IDS.to_vec(),
+            boss: Value::Null,
             blocks_seen: 0,
             splat_times: VecDeque::new(),
             splats_sent: 0,
@@ -1212,7 +1320,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             init, set_profile, set_skin, clear_skin, host, join, leave,
             steam_status, steam_rooms, steam_invite,
-            buy, throw_item, open_chest, merge_decos, equip_deco,
+            buy, throw_item, open_chest, open_boss_chest, merge_decos, equip_deco,
             check_for_update, apply_update, hit_rects, overlay_idle, set_dnd, quit
         ])
         .setup(move |app| {

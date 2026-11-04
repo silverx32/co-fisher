@@ -82,6 +82,9 @@ pub struct Config {
     pub deco: String,
     /// When the last chest was opened (Unix ms).
     pub last_chest_ms: u64,
+    /// Unopened chests from beaten bosses; the lucky ones (last hit) have better odds.
+    pub boss_chests: u64,
+    pub lucky_chests: u64,
     /// 免打扰: hits show on the pet only, never full screen.
     pub dnd: bool,
 }

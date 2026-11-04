@@ -310,6 +310,65 @@ test('room-wide items: cooldowns, someone to hit, fireworks for everyone, umbrel
   a.ws.close(); b.ws.close();
 }));
 
+test('room boss: typing hurts it, 3% of its HP earns a chest, the next one comes after the cooldown', () => withServer(['--boss-hp', '20', '--boss-cooldown', '1'], async (port) => {
+  const [a, b, c] = [1, 2, 3].map((n) => client(port, { id: id(n), name: 'ABC'[n - 1] }));
+  await Promise.all([a, b, c].map((x) => x.wait((m) => m.t === 'welcome')));
+  // Bug 虫 is 80% tough: 16 HP for each player in the room at once.
+  const st = await a.wait((m) => m.t === 'state' && m.boss?.max === 48);
+  assert.deepEqual([st.boss.emoji, st.boss.name, st.boss.hp, st.boss.level, st.boss.in, st.boss.minPct], ['🐛', 'Bug 虫', 48, 1, 0, 3]);
+
+  a.send({ t: 'status', count: 30, typing: true, inv: {} });
+  const hurt = await b.wait((m) => m.t === 'state' && m.boss.hp === 18);
+  assert.equal(hurt.players.find((p) => p.id === id(1)).dmg, 30);
+  c.send({ t: 'status', count: 1, typing: true, inv: {} }); // 1 of 48: about 2%
+  await b.wait((m) => m.t === 'state' && m.boss.hp === 17);
+  b.send({ t: 'status', count: 30, typing: true, inv: {} }); // more than it has left
+  const down = await a.wait((m) => m.t === 'bossDown');
+  assert.deepEqual([down.name, down.killer, down.killerName, down.total, down.minPct], ['Bug 虫', id(2), 'B', 48, 3]);
+  assert.deepEqual(down.damage, { [id(1)]: 30, [id(2)]: 17, [id(3)]: 1 });
+  assert.deepEqual(down.rewarded.sort(), [id(1), id(2)], 'C dealt under 3%: no chest');
+  const wait = await a.wait((m) => m.t === 'state' && m.boss.hp === 0);
+  assert.equal(wait.boss.name, 'Deadline 怪', 'shows the next one while waiting');
+  assert.ok(wait.boss.in > 0 && wait.boss.in <= 1000, `in = ${wait.boss.in}`);
+  assert.equal(wait.players.find((p) => p.id === id(2)).dmg, 17, 'the last fight stays ranked');
+
+  const next = await a.wait((m) => m.t === 'state' && m.boss.hp > 0 && m.boss.level === 2, 4000);
+  assert.deepEqual([next.boss.name, next.boss.max], ['Deadline 怪', 60]);
+  b.send({ t: 'status', count: 5, typing: false, inv: {} }); // spending points
+  const spent = await a.wait((m) => m.t === 'state' && m.players.some((p) => p.id === id(2) && p.count === 5));
+  assert.equal(spent.boss.hp, 60, 'spending points does not hurt it');
+  // A fourth player at once adds a share.
+  const d = client(port, { id: id(4), name: 'D' });
+  const joined = await a.wait((m) => m.t === 'state' && m.players.length === 4);
+  assert.deepEqual([joined.boss.hp, joined.boss.max], [80, 80]);
+  for (const x of [a, b, c, d]) x.ws.close();
+}));
+
+test('room boss: coming and going never stacks its HP', () => withServer(['--boss-hp', '20'], async (port) => {
+  // Waits for a message that arrives after this call.
+  const next = (x, pred) => {
+    const from = x.inbox.length;
+    return x.wait((m) => x.inbox.indexOf(m) >= from && pred(m));
+  };
+  const a = client(port, { id: id(1), name: 'A' });
+  await a.wait((m) => m.t === 'state' && m.boss?.max === 16);
+  // Someone joins and leaves over and over, under the same id or a new one each time.
+  for (const n of [2, 2, 3, 4, 5, 2]) {
+    const joined = next(a, (m) => m.t === 'state' && m.players.length === 2);
+    const b = client(port, { id: id(n), name: `P${n}` });
+    assert.equal((await joined).boss.max, 32, `two at once (${id(n)})`);
+    const left = next(a, (m) => m.t === 'state' && m.players.length === 1);
+    b.ws.close();
+    await left;
+  }
+  // Three at once is a new high: one more share.
+  const x = client(port, { id: id(7) });
+  const y = client(port, { id: id(8) });
+  const three = await a.wait((m) => m.t === 'state' && m.players.length === 3);
+  assert.deepEqual([three.boss.hp, three.boss.max], [48, 48]);
+  for (const z of [a, x, y]) z.ws.close();
+}));
+
 test('malformed messages are ignored, oversized frames close the socket',() => withServer([], async (port) => {
   const a = client(port, { id: id(1) });
   await a.wait((m) => m.t === 'welcome');

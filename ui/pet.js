@@ -16,6 +16,8 @@ const S = {
   items: {},
   serverItems: [], // items the room's server supports (older ones know fewer)
   dnd: false,
+  boss: null, // the room's boss: { emoji, name, level, hp, max, in }; hp 0 = waiting for the next
+  bossAt: 0, // local time the next boss appears
   characters: [],
   players: [],
   skins: {}, // playerId -> { rev, skin }
@@ -327,6 +329,59 @@ async function useRoomItem(item) {
   S.wallet = r.wallet;
   renderWallet();
   if (item.kind === 'group') for (const node of friendEls.values()) flyItem(MISSILE[item.id] || item.emoji, node);
+}
+
+// ---------------------------------------------------------------- boss
+// The room's boss over the friends: everyone's typing takes its HP down. Beaten, it shows a
+// countdown to the next one.
+let bossHp = null; // HP last shown, to pop damage numbers when it drops
+let bossDown = null; // { until, killerName }: show the win for a moment
+
+function renderBoss() {
+  const b = S.boss;
+  const box = $('#boss');
+  box.classList.toggle('hidden', !b || S.net !== 'online');
+  if (!b) {
+    bossHp = null;
+    return;
+  }
+  const up = b.hp > 0;
+  const won = bossDown && Date.now() < bossDown.until;
+  box.classList.toggle('waiting', !up && !won);
+  box.classList.toggle('down', !!won);
+  $('#bossEmoji').textContent = won ? '💥' : b.emoji;
+  $('#bossName').textContent = won ? '打败了！' : up ? b.name : `下一只：${b.name}`;
+  $('#bossLevel').textContent = won ? '' : `Lv.${b.level}`;
+  $('#bossFill').style.width = up ? `${(100 * b.hp) / Math.max(1, b.max)}%` : '0%';
+  $('#bossHp').textContent = won ? `最后一击：${bossDown.killerName}`
+    : up ? `${b.hp.toLocaleString()} / ${b.max.toLocaleString()}` : `${mmss(Math.max(0, S.bossAt - Date.now()))} 后出现`;
+  if (up && bossHp !== null && b.hp < bossHp) hurtBoss(bossHp - b.hp);
+  bossHp = up ? b.hp : null;
+  // Damage as a share of its HP: a chest needs at least minPct.
+  const pct = (d) => {
+    const p = (100 * d) / Math.max(1, b.max);
+    return `${p < 10 ? p.toFixed(1) : Math.round(p)}%`;
+  };
+  const mine = S.players.find((p) => p.id === S.me.id)?.dmg || 0;
+  const tag = $('#bossMine');
+  tag.classList.toggle('hidden', !up || !!won);
+  tag.classList.toggle('low', mine * 100 < b.max * b.minPct);
+  tag.textContent = `我 ${pct(mine)}`;
+  const ranking = S.players.filter((p) => p.dmg > 0).sort((x, y) => y.dmg - x.dmg).slice(0, 5)
+    .map((p, k) => `${k + 1}. ${p.name}  ${p.dmg}（${pct(p.dmg)}）`).join('\n');
+  box.title = `${up ? `${b.emoji} ${b.name} Lv.${b.level}\n血量 ${b.hp} / ${b.max}\n我的伤害 ${mine}（${pct(mine)}）` : `下一只：${b.emoji} ${b.name} Lv.${b.level}`}` +
+    `${ranking ? `\n${up ? '伤害' : '上一只的伤害'}：\n${ranking}` : ''}` +
+    `\n大家敲键盘就是在打它。打败时伤害占 ${b.minPct}% 以上的人每人得一个 Boss 宝箱，补最后一刀的人宝箱稀有度更高`;
+}
+
+function hurtBoss(damage) {
+  const e = $('#bossEmoji');
+  e.classList.remove('hurt');
+  void e.offsetWidth;
+  e.classList.add('hurt');
+  const n = el('span', 'boss-dmg', `-${damage}`);
+  $('#boss').append(n);
+  setTimeout(() => n.remove(), 900);
 }
 
 // ---------------------------------------------------------------- panel
@@ -725,22 +780,37 @@ const mmss = (ms) => {
   return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
 };
 
-// The panel's 开箱 button and the bubble next to my character.
+const bossChests = () => (S.decoState.bossChests || 0) + (S.decoState.luckyChests || 0);
+
+// The panel's 开箱 buttons and the bubble next to my character (boss chests come first).
 function renderChest() {
   if (!S.decos.chestCost) return;
   const wait = chestWait();
   const cost = S.decos.chestCost;
   const short = Math.max(0, cost - S.wallet.count);
-  const odds = S.decos.rarities.map((r) => `${r.name} ${r.odds}%`).join('  ');
+  const odds = `${S.decos.rarities.map((r) => `${r.name} ${r.odds}%`).join('  ')}\n约 ${S.decos.itemChance}% 开出道具`;
   const btn = $('#chestBtn');
   btn.disabled = chestOpening || wait > 0 || short > 0;
   btn.title = `概率：${odds}`;
   btn.textContent = wait ? mmss(wait) : '开箱';
   $('#chestInfo').textContent = `${cost} 点开一次，每 ${S.decos.chestCooldownMs / 60000} 分钟一次`;
 
+  const won = bossChests();
+  const lucky = S.decoState.luckyChests || 0;
+  const luckyOdds = S.decos.rarities.map((r) => `${r.name} ${r.luckyOdds}%`).join('  ');
+  $('#bossChestRow').classList.toggle('hidden', !won);
+  $('#bossChestBtn').disabled = chestOpening;
+  $('#bossChestBtn').textContent = `打开（${won}）`;
+  $('#bossChestBtn').title = lucky ? `幸运宝箱概率：${luckyOdds}` : `概率：${odds}`;
+  $('#bossChestInfo').textContent = `打败 Boss 得到，不花点数${lucky ? `；${lucky} 个是补刀的幸运宝箱` : ''}`;
+
   const b = $('#myChest');
-  b.classList.remove('hidden', 'ready', 'poor', 'cd');
-  if (wait) {
+  b.classList.remove('hidden', 'ready', 'poor', 'cd', 'boss');
+  if (won) {
+    b.classList.add('boss');
+    b.textContent = `🎁 Boss ×${won}`;
+    b.title = `打败 Boss 得到的宝箱，点一下打开（不花点数、没有冷却）${lucky ? `\n其中 ${lucky} 个是补刀的幸运宝箱，概率：${luckyOdds}` : ''}`;
+  } else if (wait) {
     b.classList.add('cd');
     b.textContent = `⏳ ${mmss(wait)}`;
     b.title = '宝箱冷却中';
@@ -762,52 +832,91 @@ async function openChest() {
     S.decoState = r.decoState;
     renderWallet();
     renderDecos();
-    revealDeco(r.item, r.isNew, '宝箱开出了');
+    revealPrize(r.prize, '宝箱开出了');
   } finally {
     chestOpening = false;
     renderChest();
   }
 }
 
-// What the chest gave, popping up above my character for a few seconds.
-let myRevealTimer;
-function showMyReveal(d, r, isNew) {
-  const box = $('#myReveal');
-  const name = el('b', null, d.name);
-  name.style.color = r.color;
-  const text = el('div', null);
-  text.append(name, el('div', 'tip', isNew ? `${r.name} · NEW` : `${r.name} · 重复`));
-  box.replaceChildren(decoIcon(d), text);
+async function openBossChest() {
+  if (chestOpening || !bossChests()) return;
+  chestOpening = true;
+  renderChest();
+  try {
+    const r = await api.openBossChest();
+    if (!r.ok) return toast(r.error);
+    S.wallet = r.wallet;
+    S.decoState = r.decoState;
+    renderWallet();
+    renderDecos();
+    revealPrize(r.prize, r.lucky ? '幸运 Boss 宝箱开出了' : 'Boss 宝箱开出了');
+  } finally {
+    chestOpening = false;
+    renderChest();
+  }
+}
+
+// Shows `box` and restarts its pop-in animation.
+function replay(box) {
   box.classList.remove('hidden');
   box.style.animation = 'none';
   void box.offsetWidth;
   box.style.animation = '';
+}
+
+// What a chest gave, popping up above my character for a few seconds.
+let myRevealTimer;
+function showMyReveal(icon, title, color, sub) {
+  const box = $('#myReveal');
+  const name = el('b', null, title);
+  name.style.color = color;
+  const text = el('div', null);
+  text.append(name, el('div', 'tip', sub));
+  box.replaceChildren(icon, text);
+  replay(box);
+  // Centred over me, near the window's right edge: move a wide one (item bundles) left to fit.
+  box.style.marginLeft = '0px';
+  const right = $('#me').getBoundingClientRect().left + box.offsetLeft + box.offsetWidth / 2;
+  box.style.marginLeft = `${Math.min(0, window.innerWidth - 8 - right)}px`;
   clearTimeout(myRevealTimer);
   myRevealTimer = setTimeout(() => box.classList.add('hidden'), 4000);
+}
+
+// A chest's prize: { kind: 'deco', id, isNew } or { kind: 'items', rarity, items: { id: count } }.
+function revealPrize(p, how) {
+  if (p.kind === 'deco') return revealDeco(p.id, p.isNew, how);
+  const r = S.decos.rarities[p.rarity];
+  const got = Object.entries(p.items).map(([id, n]) => [S.items[id], n]).filter(([it]) => it);
+  const icon = () => el('div', 'reveal-emoji', got.map(([it]) => it.emoji).join(''));
+  const names = got.map(([it, n]) => `${it.name}×${n}`).join('、');
+  const text = el('div');
+  const name = el('b', null, names);
+  name.style.color = r.color;
+  text.append(el('div', 'tip', how), name, el('div', null, `${r.name} · 道具，已放进背包`));
+  $('#decoReveal').replaceChildren(icon(), text);
+  replay($('#decoReveal'));
+  showMyReveal(icon(), names, r.color, `${r.name} · 道具`);
 }
 
 function revealDeco(id, isNew, how) {
   const d = decoById.get(id);
   if (!d) return;
   const r = S.decos.rarities[d.rarity];
-  const box = $('#decoReveal');
-  const img = decoIcon(d);
   const text = el('div');
   const name = el('b', null, d.name);
   name.style.color = r.color;
   text.append(el('div', 'tip', how), name);
   if (isNew) text.append(el('span', 'new', 'NEW'));
   text.append(el('div', null, `${r.name}${isNew ? '' : ' · 重复，可用来合成'}`));
-  box.replaceChildren(img, text);
-  box.classList.remove('hidden');
-  box.style.animation = 'none';
-  void box.offsetWidth;
-  box.style.animation = '';
-  showMyReveal(d, r, isNew);
+  $('#decoReveal').replaceChildren(decoIcon(d), text);
+  replay($('#decoReveal'));
+  showMyReveal(decoIcon(d), d.name, r.color, isNew ? `${r.name} · NEW` : `${r.name} · 重复`);
 }
 
 $('#chestBtn').addEventListener('click', openChest);
-$('#myChest').addEventListener('click', openChest);
+$('#bossChestBtn').addEventListener('click', openBossChest);
+$('#myChest').addEventListener('click', () => (bossChests() ? openBossChest() : openChest()));
 
 async function mergeDecos(rarity) {
   const sec = decoSections[rarity];
@@ -959,7 +1068,21 @@ api.on('net-status', (s) => {
   renderFriendButtons();
   renderMyItems();
   renderShop();
+  renderBoss();
 });
+api.on('boss', (b) => {
+  if (!S.me) return;
+  S.boss = b;
+  if (b) S.bossAt = Date.now() + b.in;
+  renderBoss();
+});
+api.on('boss-down', (d) => {
+  if (!S.me) return;
+  bossDown = { until: Date.now() + 2500, killerName: d.killerName };
+  renderBoss();
+});
+// Boss chests won (the reply to opening one carries the state too).
+api.on('deco-state', (d) => { if (S.me) { S.decoState = d; renderDecos(); renderChest(); } });
 api.on('server-items', (list) => {
   if (!S.me) return;
   S.serverItems = list;
@@ -995,7 +1118,7 @@ api.on('steam-joined', (d) => {
   Object.assign(S, {
     me: d.me, wallet: d.wallet, items: d.items, serverItems: d.serverItems, dnd: d.dnd, characters: d.characters, maxPlayers: d.maxPlayers,
     players: d.players, skins: d.skins, net: d.net.state, server: d.server, steam: d.steam || d.server?.steam,
-    decos: d.decos, decoState: d.decoState, version: d.version, update: d.update,
+    decos: d.decos, decoState: d.decoState, version: d.version, update: d.update, boss: d.boss, bossAt: Date.now() + (d.boss?.in || 0),
   });
   for (const x of d.decos.items) decoById.set(x.id, x);
   $('#nameInput').value = d.me.name;
@@ -1010,12 +1133,13 @@ api.on('steam-joined', (d) => {
   buildDecos();
   renderDecos();
   renderUpdate();
-  setInterval(renderChest, 1000);
+  setInterval(() => { renderChest(); renderBoss(); }, 1000); // countdowns
   renderMe();
   renderWallet();
   renderChars();
   renderFriends();
   renderRoom();
+  renderBoss();
   if (S.steam?.available && S.net === 'offline') refreshSteamRooms();
   if (d.justUpdated) toast(`已更新到 v${d.version}`);
 })();

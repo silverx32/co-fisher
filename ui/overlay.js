@@ -239,8 +239,9 @@ function rain({ fromName }) {
 }
 
 // Shells rise from the bottom and burst into sparks that droop and fade, leaving trails.
-function fireworks({ fromName, mine }) {
-  banner(mine ? '🎆 你放了一场烟花！' : `🎆 ${fromName} 放了一场烟花！`);
+// `title` replaces the usual banner (e.g. when the room beats its boss).
+function fireworks({ fromName, mine, title }) {
+  banner(title || (mine ? '🎆 你放了一场烟花！' : `🎆 ${fromName} 放了一场烟花！`));
   const W = window.innerWidth;
   const H = window.innerHeight;
   const dpr = window.devicePixelRatio || 1;

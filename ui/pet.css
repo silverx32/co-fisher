@@ -71,6 +71,31 @@ button.mini { padding: 1px 7px; font-size: 11px; border-radius: 6px; }
 
 /* ---------- friends */
 #stage { display: flex; align-items: flex-end; gap: 6px; }
+#side { display: flex; flex-direction: column; align-items: flex-end; }
+
+/* ---------- the room's boss, standing over the friends next to me */
+#boss {
+  position: relative; display: flex; align-items: center; gap: 6px; width: 250px; margin: 0 2px 8px 0; padding: 4px 10px 5px 6px;
+  background: rgba(255,255,255,.88); border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.18);
+}
+#boss:hover { background: #fff; }
+#bossEmoji { flex: none; width: 42px; font-size: 34px; line-height: 40px; text-align: center; }
+#bossEmoji.hurt { animation: hurt .25s; }
+@keyframes hurt { 30% { transform: translateX(-3px) rotate(-8deg) scale(.9); } 70% { transform: translateX(3px) rotate(6deg); } }
+#boss.waiting #bossEmoji { filter: grayscale(1); opacity: .45; }
+#boss.down #bossEmoji { animation: pulse .3s infinite alternate; }
+.boss-info { flex: 1; min-width: 0; }
+.boss-title { display: flex; align-items: baseline; gap: 5px; font-size: 12px; white-space: nowrap; overflow: hidden; }
+.boss-title small { color: #999; font-size: 10px; }
+/* my share of the damage: red until it's enough for a chest */
+#bossMine { margin-left: auto; color: #2e9d57; font-weight: bold; }
+#bossMine.low { color: #e53935; }
+.boss-bar { position: relative; height: 15px; margin-top: 2px; border-radius: 8px; background: #ece9f2; overflow: hidden; }
+#bossFill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(#ff8a80, #e53935); transition: width .3s; }
+#bossHp { position: relative; display: block; font-size: 10px; line-height: 15px; font-weight: bold; text-align: center; color: #5a2323; white-space: nowrap; }
+#boss.waiting #bossHp, #boss.down #bossHp { color: #666; }
+.boss-dmg { position: absolute; right: 14px; top: -4px; color: #e53935; font-size: 12px; font-weight: bold; pointer-events: none; animation: dmg .9s forwards; }
+@keyframes dmg { to { transform: translateY(-18px); opacity: 0; } }
 /* row-reverse: the first friend to join stands right next to me, later ones further left */
 /* At most 8 per row (window width); a full room wraps into a second row above the first. */
 #friends {
@@ -130,6 +155,9 @@ button.mini { padding: 1px 7px; font-size: 11px; border-radius: 6px; }
 .chest-bubble.ready:hover { filter: brightness(1.05); }
 .chest-bubble.ready::before { border-bottom-color: #fff6db; }
 .chest-bubble.poor { opacity: .65; }
+.chest-bubble.boss { background: linear-gradient(#fff0f6, #ffcfe4); color: #c2185b; font-weight: bold; cursor: pointer; animation: bob 1.2s ease-in-out infinite; }
+.chest-bubble.boss:hover { filter: brightness(1.05); }
+.chest-bubble.boss::before { border-bottom-color: #fff0f6; }
 /* Room-wide items, umbrellas and 免打扰, under the count */
 .me-items { display: flex; flex-wrap: wrap; justify-content: center; gap: 3px; margin-top: 3px; position: relative; z-index: 3; }
 .mitem {
@@ -147,6 +175,9 @@ button.mitem:not(:disabled):hover { background: #fff3e0; border-color: #ffb347; 
   white-space: nowrap; pointer-events: none; animation: myreveal .5s;
 }
 #myReveal img { width: 44px; height: 44px; object-fit: contain; }
+/* An item bundle from a chest, in place of a cosmetic's picture */
+.reveal-emoji { flex: none; min-width: 44px; font-size: 26px; line-height: 44px; text-align: center; }
+#decoReveal .reveal-emoji { min-width: 64px; font-size: 34px; line-height: 64px; }
 #myReveal .tip { margin: 0; }
 @keyframes myreveal { 0% { transform: translateX(-50%) scale(.5); opacity: 0; } 70% { transform: translateX(-50%) scale(1.08); } 100% { transform: translateX(-50%); opacity: 1; } }
 #bubble b { color: #e8742b; }

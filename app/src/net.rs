@@ -20,9 +20,11 @@ const DEAD_AFTER: Duration = Duration::from_secs(20);
 pub enum NetEvent {
     Status { state: &'static str, text: String },
     Welcome(Value),
-    State(Vec<Value>),
+    /// Players and the room's boss (null from servers without one).
+    State(Vec<Value>, Value),
     Skin(Value),
     Hit(Value),
+    BossDown(Value),
     Log(String),
     ThrowResult(Value),
 }
@@ -146,7 +148,7 @@ impl Net {
                 return;
             }
             let (outcome, was_online) = self.session(generation, &url, &password, &room, &hello).await;
-            self.emit(generation, NetEvent::State(Vec::new()));
+            self.emit(generation, NetEvent::State(Vec::new(), Value::Null));
             match outcome {
                 Err(fatal) => {
                     self.set_state(generation, "offline", &fatal);
@@ -232,11 +234,12 @@ impl Net {
                             }
                             Some("state") => {
                                 if let Value::Array(list) = v["players"].take() {
-                                    self.emit(generation, NetEvent::State(list));
+                                    self.emit(generation, NetEvent::State(list, v["boss"].take()));
                                 }
                             }
                             Some("skin") => self.emit(generation, NetEvent::Skin(v)),
                             Some("hit") => self.emit(generation, NetEvent::Hit(v)),
+                            Some("bossDown") => self.emit(generation, NetEvent::BossDown(v)),
                             Some("throwResult") => self.emit(generation, NetEvent::ThrowResult(v)),
                             Some("log") => {
                                 if let Some(t) = v["text"].as_str() {

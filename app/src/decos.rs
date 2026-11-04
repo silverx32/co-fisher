@@ -38,6 +38,26 @@ pub const RARITIES: [Rarity; 5] = [
     Rarity { name: "传说", color: "#f59e0b", weight: 25 },
     Rarity { name: "神话", color: "#ef4444", weight: 5 },
 ];
+/// Odds for the chest of whoever lands a boss's last hit: a bit better than RARITIES' (in 1/1000).
+pub const LUCKY_WEIGHTS: [u32; 5] = [540, 290, 120, 40, 10];
+
+/// Share of chests (in %) that hold an item bundle instead of a cosmetic.
+pub const ITEM_CHANCE: u32 = 25;
+/// Item bundles by rarity, one picked at random: (item id, how many).
+const BUNDLES: [&[&[(&str, u64)]]; 5] = [
+    &[&[("tomato", 10)], &[("ink", 5)], &[("umbrella", 1)]],
+    &[&[("poop", 5)], &[("firework", 3)], &[("umbrella", 2)]],
+    &[&[("rain", 2)], &[("firework", 6)]],
+    &[&[("rain", 3), ("umbrella", 2)]],
+    &[&[("rain", 6), ("firework", 6), ("umbrella", 2)]],
+];
+
+/// What a chest gives.
+pub enum Prize {
+    Deco(&'static Deco),
+    /// Rarity and the items.
+    Items(usize, &'static [(&'static str, u64)]),
+}
 
 /// (id, name) of each slot; one item per slot can be worn at a time.
 pub const SLOTS: [(&str, &str); 3] = [("head", "头饰"), ("pet", "宠物"), ("fx", "特效")];
@@ -70,7 +90,12 @@ pub fn catalogue() -> Value {
     json!({
         "items": all().iter().map(|d| json!({ "id": d.id, "name": d.name, "rarity": d.rarity, "slot": d.slot, "layer": d.layer, "box": d.icon_box })).collect::<Vec<_>>(),
         "slots": SLOTS.iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
-        "rarities": RARITIES.iter().map(|r| json!({ "name": r.name, "color": r.color, "odds": r.weight as f64 / 10.0 })).collect::<Vec<_>>(),
+        "rarities": RARITIES
+            .iter()
+            .zip(LUCKY_WEIGHTS)
+            .map(|(r, lucky)| json!({ "name": r.name, "color": r.color, "odds": r.weight as f64 / 10.0, "luckyOdds": lucky as f64 / 10.0 }))
+            .collect::<Vec<_>>(),
+        "itemChance": ITEM_CHANCE,
         "chestCost": CHEST_COST,
         "chestCooldownMs": CHEST_COOLDOWN_MS,
         "mergeCount": MERGE_COUNT,
@@ -90,16 +115,25 @@ fn pick_in(rarity: usize) -> &'static Deco {
     pool[rand_below(pool.len() as u32) as usize]
 }
 
-pub fn roll_chest() -> &'static Deco {
-    let total: u32 = RARITIES.iter().map(|r| r.weight).sum();
-    let mut x = rand_below(total);
-    for (i, r) in RARITIES.iter().enumerate() {
-        if x < r.weight {
-            return pick_in(i);
+fn roll_rarity(weights: &[u32]) -> usize {
+    let mut x = rand_below(weights.iter().sum());
+    for (i, w) in weights.iter().enumerate() {
+        if x < *w {
+            return i;
         }
-        x -= r.weight;
+        x -= w;
     }
-    pick_in(0)
+    0
+}
+
+/// Opens a chest: a rarity first (`lucky`: the boss's last hit), then a cosmetic or an item bundle of it.
+pub fn roll_chest(lucky: bool) -> Prize {
+    let rarity = if lucky { roll_rarity(&LUCKY_WEIGHTS) } else { roll_rarity(&RARITIES.map(|r| r.weight)) };
+    if rand_below(100) < ITEM_CHANCE {
+        let bundles = BUNDLES[rarity];
+        return Prize::Items(rarity, bundles[rand_below(bundles.len() as u32) as usize]);
+    }
+    Prize::Deco(pick_in(rarity))
 }
 
 pub type Owned = BTreeMap<String, u64>;
@@ -229,9 +263,32 @@ mod tests {
     }
 
     #[test]
-    fn chest_rolls_valid_items() {
-        for _ in 0..200 {
-            assert!(get(&roll_chest().id).is_some());
+    fn chest_rolls_valid_prizes() {
+        let (mut decos, mut bundles) = (0, 0);
+        for i in 0..2000 {
+            match roll_chest(i % 2 == 0) {
+                Prize::Deco(d) => {
+                    assert!(get(&d.id).is_some());
+                    decos += 1;
+                }
+                Prize::Items(rarity, items) => {
+                    assert!(BUNDLES[rarity].contains(&items));
+                    bundles += 1;
+                }
+            }
         }
+        // About a quarter are items (expected 500 of 2000).
+        assert!((300..700).contains(&bundles), "{bundles} bundles, {decos} cosmetics");
+    }
+
+    #[test]
+    fn bundles_and_lucky_odds_make_sense() {
+        for bundle in BUNDLES.iter().flat_map(|b| b.iter()) {
+            assert!(bundle.iter().all(|(id, n)| cofisher_server::ITEM_IDS.contains(id) && *n > 0), "{bundle:?}");
+        }
+        assert_eq!(LUCKY_WEIGHTS.iter().sum::<u32>(), 1000);
+        // Lucky: less 普通, more of everything rarer.
+        assert!(LUCKY_WEIGHTS[0] < RARITIES[0].weight);
+        assert!(LUCKY_WEIGHTS.iter().zip(&RARITIES).skip(1).all(|(l, r)| *l > r.weight));
     }
 }

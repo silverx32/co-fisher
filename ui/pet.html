@@ -96,20 +96,34 @@
           <div class="info"><b>摸鱼宝箱</b><small id="chestInfo"></small></div>
           <button id="chestBtn" class="primary">开箱</button>
         </div>
+        <div id="bossChestRow" class="chest-row hidden">
+          <div class="chest-icon">⚔️</div>
+          <div class="info"><b>Boss 宝箱</b><small id="bossChestInfo"></small></div>
+          <button id="bossChestBtn" class="primary">打开</button>
+        </div>
         <div id="decoReveal" class="hidden"></div>
       </div>
       <div id="decoWorn" class="box"></div>
       <div id="decoMerge" class="box"><h4>合成（同稀有度任意 10 个 → 1 个高一级，优先用掉重复的）</h4></div>
       <div id="decoSlotTabs" class="slot-tabs"></div>
       <div id="decoList"></div>
-      <p class="tip">头饰、宠物、特效各能穿一件，点已拥有的就能穿上，再点一次卸下。所有角色通用，好友也能看到。</p>
+      <p class="tip">头饰、宠物、特效各能穿一件，点已拥有的就能穿上，再点一次卸下。所有角色通用，好友也能看到。宝箱也可能开出道具；房间里的 Boss 被打败后，每人得一个免费的 Boss 宝箱。</p>
     </section>
   </div>
 
   <div id="log"></div>
-  <!-- Bottom row: friends line up to the left of me, in join order. -->
+  <!-- Bottom row: friends line up to the left of me, in join order; the room's boss stands over them. -->
   <div id="stage">
-    <div id="friends"></div>
+    <div id="side">
+      <div id="boss" class="hit hidden">
+        <div id="bossEmoji"></div>
+        <div class="boss-info">
+          <div class="boss-title"><b id="bossName"></b><small id="bossLevel"></small><small id="bossMine"></small></div>
+          <div class="boss-bar"><div id="bossFill"></div><span id="bossHp"></span></div>
+        </div>
+      </div>
+      <div id="friends"></div>
+    </div>
     <div id="me">
       <div id="myReveal" class="hidden"></div>
       <div id="myAvatar" class="avatar">
