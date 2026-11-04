@@ -68,12 +68,14 @@ test('joins, sees roster and status updates', () => withServer([], async (port) 
   await a.wait((m) => m.t === 'welcome');
   const b = client(port, { id: id(2), name: 'B', char: 'kimi', deco: 'crown-ruby', decos: ['crown-ruby', 'pet-fox'] });
   await b.wait((m) => m.t === 'welcome');
-  b.send({ t: 'status', count: 10, typing: true, inv: { tomato: 2 }, chest: true });
+  b.send({ t: 'status', count: 10, typing: true, inv: { tomato: 2 }, chest: true, dnd: true });
   const st = await a.wait((m) => m.t === 'state' && m.players.some((p) => p.id === id(2) && p.count === 10));
   const pb = st.players.find((p) => p.id === id(2));
   assert.equal(pb.char, 'kimi');
   assert.equal(pb.typing, true);
   assert.equal(pb.inv.tomato, 2);
+  assert.equal(pb.dnd, true);
+  assert.equal(st.players.find((p) => p.id === id(1)).dnd, false);
   assert.equal(pb.deco, 'crown-ruby');
   assert.deepEqual(pb.decos, ['crown-ruby', 'pet-fox']);
   assert.equal(pb.chest, true);
@@ -247,6 +249,64 @@ test('a throw right after buying uses the inventory sent with it', () => withSer
   assert.equal((await a.wait((m) => m.t === 'throwResult' && m.seq === 1)).ok, true);
   a.send({ t: 'throw', seq: 2, item: 'poop', target: id(2) });
   assert.equal((await a.wait((m) => m.t === 'throwResult' && m.seq === 2)).ok, false, 'server deducted it');
+  a.ws.close(); b.ws.close();
+}));
+
+test('tomato rain hits everyone else; umbrellas block attacks and get used up', () => withServer([], async (port) => {
+  const a = client(port, { id: id(1), name: 'A', inv: { rain: 1, tomato: 1 } });
+  const welcome = await a.wait((m) => m.t === 'welcome');
+  assert.deepEqual(welcome.items, ['tomato', 'ink', 'poop', 'rain', 'firework', 'umbrella']);
+  const b = client(port, { id: id(2), name: 'B', inv: { umbrella: 1 } });
+  const c = client(port, { id: id(3), name: 'C' });
+  await Promise.all([b, c].map((x) => x.wait((m) => m.t === 'welcome')));
+
+  a.send({ t: 'throw', seq: 1, item: 'rain', target: '' });
+  assert.equal((await a.wait((m) => m.t === 'throwResult' && m.seq === 1)).ok, true);
+  const rain = await c.wait((m) => m.t === 'hit' && m.item === 'rain');
+  assert.deepEqual([rain.from, rain.fromName, rain.to, rain.targets, rain.blocked], [id(1), 'A', '', [id(3)], [id(2)]]);
+  await a.wait((m) => m.t === 'hit' && m.item === 'rain');
+
+  // B's status was sent before B heard about the block: the umbrella stays used up.
+  b.send({ t: 'status', count: 1, typing: false, inv: { umbrella: 1 } });
+  const st = await a.wait((m) => m.t === 'state' && m.players.some((p) => p.id === id(2) && p.count === 1));
+  assert.equal(st.players.find((p) => p.id === id(2)).inv.umbrella, 0);
+  a.send({ t: 'throw', seq: 2, item: 'tomato', target: id(2) });
+  const tomato = await b.wait((m) => m.t === 'hit' && m.item === 'tomato');
+  assert.deepEqual([tomato.to, tomato.toName, tomato.targets, tomato.blocked], [id(2), 'B', [id(2)], []]);
+
+  // Once B counts the block, a new umbrella (bought since) shows up and blocks the next throw.
+  b.send({ t: 'status', count: 2, typing: false, inv: { umbrella: 1 }, blocks: 1 });
+  await a.wait((m) => m.t === 'state' && m.players.some((p) => p.id === id(2) && p.count === 2 && p.inv.umbrella === 1));
+  a.send({ t: 'throw', seq: 3, item: 'tomato', target: id(2), inv: { tomato: 1 } });
+  const blocked = await b.wait((m) => m.t === 'hit' && m.item === 'tomato' && m.blocked.length);
+  assert.deepEqual([blocked.to, blocked.targets, blocked.blocked], [id(2), [], [id(2)]]);
+  for (const x of [a, b, c]) x.ws.close();
+}));
+
+test('room-wide items: cooldowns, someone to hit, fireworks for everyone, umbrellas are not thrown', () => withServer([], async (port) => {
+  const a = client(port, { id: id(1), name: 'A', inv: { rain: 2, firework: 2, umbrella: 1 } });
+  await a.wait((m) => m.t === 'welcome');
+  a.send({ t: 'throw', seq: 1, item: 'rain', target: '' });
+  assert.match((await a.wait((m) => m.t === 'throwResult' && m.seq === 1)).text, /没有别人/);
+  a.send({ t: 'throw', seq: 2, item: 'umbrella', target: '' });
+  assert.equal((await a.wait((m) => m.t === 'throwResult' && m.seq === 2)).ok, false);
+
+  const b = client(port, { id: id(2), name: 'B', inv: { umbrella: 1 } });
+  await b.wait((m) => m.t === 'welcome');
+  a.send({ t: 'throw', seq: 3, item: 'firework', target: '' });
+  assert.equal((await a.wait((m) => m.t === 'throwResult' && m.seq === 3)).ok, true);
+  const show = await a.wait((m) => m.t === 'hit' && m.item === 'firework'); // the sender sees it too
+  await b.wait((m) => m.t === 'hit' && m.item === 'firework');
+  assert.deepEqual([show.targets, show.blocked], [[], []], 'not an attack: umbrellas stay');
+
+  a.send({ t: 'throw', seq: 4, item: 'firework', target: '' });
+  assert.match((await a.wait((m) => m.t === 'throwResult' && m.seq === 4)).text, /烟花还要等 \d+ 秒/);
+  a.send({ t: 'throw', seq: 5, item: 'rain', target: '' });
+  assert.equal((await a.wait((m) => m.t === 'throwResult' && m.seq === 5)).ok, true, 'each item has its own cooldown');
+  a.send({ t: 'throw', seq: 6, item: 'rain', target: '' });
+  assert.match((await a.wait((m) => m.t === 'throwResult' && m.seq === 6)).text, /番茄雨还要等/);
+  const st = await b.wait((m) => m.t === 'state' && m.players.some((p) => p.id === id(1) && p.inv.rain === 1 && p.inv.firework === 1));
+  assert.equal(st.players.find((p) => p.id === id(2)).inv.umbrella, 0, 'B blocked the rain');
   a.ws.close(); b.ws.close();
 }));
 

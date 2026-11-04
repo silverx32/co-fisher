@@ -2,7 +2,8 @@
 
 可以和朋友联机的桌面宠物：小人蹲在屏幕右下角，你一敲键盘它就跟着打字；敲击次数攒成点数，换成 🍅 番茄 / 🦑 墨鱼汁 / 💩 屎，点好友小人下面的道具按钮，糊 TA 一脸。
 
-- 单个 exe（约 10MB 以内），用 Windows 10/11 自带的 WebView2 显示界面
+- 全房间道具：🌧️ 番茄雨（糊房间里其他所有人）、🎆 烟花（全房间一起看）；☂️ 雨伞自动挡下一次攻击；托盘里的「免打扰」让被糊只显示在小人身上，全屏游戏 / 放 PPT 时也会自动这样
+- 单个 exe（约 10MB 以内），用 Windows 10/11 自带的 WebView2 显示界面；只在托盘出现，不占任务栏
 - 6 个 Q 版角色（Claude、Codex、豆包、Gemini、DeepSeek、Kimi），每个 1 张待机 + 3 张打字图：每敲一下键盘随机闪一张打字图，随即回到待机；也可以上传自定义形象
 - 140 个装扮（5 种稀有度），分头饰（帽子、面具…）/ 宠物（可爱动物…）/ 特效（翅膀、光环…）三栏，每栏穿一件，所有角色通用：每 30 分钟可以花 3000 点开一次宝箱，同稀有度的 10 个合成 1 个更高稀有度的
 - 内置更新：启动后自动检查 GitHub Releases，有新版一键下载替换并重启
@@ -59,7 +60,7 @@ App 会查询 `https://api.github.com/repos/silverx32/co-fisher/releases/latest`
 2. `npm run release`
 3. 在 GitHub 新建 Release，tag 填 `v2.1.0`，上传 `dist/CoFisher/CoFisher.exe`（文件名不能改），也可以附上两个 zip
 
-更新只替换 exe，`steam_api64.dll` 等文件保持不变；房间协议版本（`PROTOCOL_VERSION`）不变时新旧版本可以互通，中转服务器建议同步更新（16 人上限、装扮同步需要新版中转）。
+更新只替换 exe，`steam_api64.dll` 等文件保持不变；房间协议版本（`PROTOCOL_VERSION`）不变时新旧版本可以互通，中转服务器建议同步更新（16 人上限、装扮同步需要新版中转；番茄雨 / 烟花 / 雨伞需要 v2.3 的中转或房主，旧版房间里会显示为暂不可用）。
 
 角色资源：图集放在 `art/atlas/{idle,typing1,typing2,typing3}.png`（3×2 网格），`npm run slice` 切成 `ui/assets/characters/<id>/*.png`；`npm run icon` 重新生成程序图标。新增/调整角色时同步修改 `server/src/lib.rs` 的 `CHARACTERS` 和 `app/src/main.rs` 的 `CHARACTER_INFO`。
 
@@ -76,4 +77,4 @@ App 会查询 `https://api.github.com/repos/silverx32/co-fisher/releases/latest`
 | `tools/` | 切图、图标、装扮生成、发布脚本 |
 | `deploy/` | 中转服务器的 systemd 服务与安装脚本 |
 
-隐私：键盘钩子只统计按下次数，不记录也不发送按了哪个键。网络上只传昵称、角色、装扮、点数、是否在打字、道具数量和自定义形象图片。检查更新时只访问 GitHub。
+隐私：键盘钩子只统计按下次数，不记录也不发送按了哪个键。网络上只传昵称、角色、装扮、点数、是否在打字、是否开了免打扰、道具数量和自定义形象图片（全屏检测的结果只在本机用，不发出去）。检查更新时只访问 GitHub。

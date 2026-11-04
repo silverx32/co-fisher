@@ -10,27 +10,37 @@ use cofisher_server::{clean_skin, CHARACTERS, DEFAULT_PORT, NAME_MAX};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+/// Items owned, in `ITEM_IDS` order.
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct Inv {
     pub tomato: u64,
     pub ink: u64,
     pub poop: u64,
+    pub rain: u64,
+    pub firework: u64,
+    pub umbrella: u64,
 }
 
 impl Inv {
     pub fn get(&self, i: usize) -> u64 {
-        [self.tomato, self.ink, self.poop][i]
+        [self.tomato, self.ink, self.poop, self.rain, self.firework, self.umbrella][i]
     }
     pub fn get_mut(&mut self, i: usize) -> &mut u64 {
         match i {
             0 => &mut self.tomato,
             1 => &mut self.ink,
-            _ => &mut self.poop,
+            2 => &mut self.poop,
+            3 => &mut self.rain,
+            4 => &mut self.firework,
+            _ => &mut self.umbrella,
         }
     }
     pub fn to_json(&self) -> Value {
-        json!({ "tomato": self.tomato, "ink": self.ink, "poop": self.poop })
+        json!({
+            "tomato": self.tomato, "ink": self.ink, "poop": self.poop,
+            "rain": self.rain, "firework": self.firework, "umbrella": self.umbrella,
+        })
     }
 }
 
@@ -72,6 +82,8 @@ pub struct Config {
     pub deco: String,
     /// When the last chest was opened (Unix ms).
     pub last_chest_ms: u64,
+    /// 免打扰: hits show on the pet only, never full screen.
+    pub dnd: bool,
 }
 
 fn null_as_default<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(d: D) -> Result<T, D::Error> {
@@ -195,6 +207,17 @@ pub fn save_skin(skin: Option<&Value>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn inventory_follows_item_ids() {
+        let ids: Vec<String> = super::Inv::default().to_json().as_object().unwrap().keys().cloned().collect();
+        assert_eq!(ids, cofisher_server::ITEM_IDS);
+        for (i, id) in cofisher_server::ITEM_IDS.iter().enumerate() {
+            let mut inv = super::Inv::default();
+            *inv.get_mut(i) = 7;
+            assert_eq!((inv.get(i), &inv.to_json()[id]), (7, &serde_json::json!(7)), "{id}");
+        }
+    }
+
     #[test]
     fn moves_the_single_v2_1_cosmetic_into_its_slot() {
         let dir = std::env::temp_dir().join(format!("cofisher-config-test-{}", std::process::id()));

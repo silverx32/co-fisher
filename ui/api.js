@@ -26,6 +26,7 @@
     hitRects: (rects) => invoke('hit_rects', { rects }),
     startDrag: () => current.startDragging(),
     overlayIdle: (seen) => invoke('overlay_idle', { seen }),
+    setDnd: (on) => invoke('set_dnd', { on }),
     quit: () => invoke('quit'),
     on: (channel, fn) => listen(channel, (e) => fn(e.payload)),
   };

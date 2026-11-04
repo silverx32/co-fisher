@@ -19,7 +19,7 @@ const DEAD_AFTER: Duration = Duration::from_secs(20);
 
 pub enum NetEvent {
     Status { state: &'static str, text: String },
-    Welcome,
+    Welcome(Value),
     State(Vec<Value>),
     Skin(Value),
     Hit(Value),
@@ -223,7 +223,7 @@ impl Net {
                                 }
                                 online = true;
                                 self.set_state(generation, "online", "已连接");
-                                self.emit(generation, NetEvent::Welcome);
+                                self.emit(generation, NetEvent::Welcome(v));
                             }
                             Some("error") => {
                                 let text: String = v["text"].as_str().unwrap_or("被房主拒绝").chars().take(60).collect();

@@ -86,7 +86,7 @@
     <section data-pane="shop" class="hidden">
       <div class="balance">可用点数 <b id="shopCount">0</b><span id="shopTotal"></span></div>
       <div id="shopList"></div>
-      <p class="tip">道具可以先囤着。好友小人下面的道具按钮，有存货时点一下就扔过去糊 TA 一脸。</p>
+      <p class="tip">道具可以先囤着。好友小人下面的道具按钮，有存货时点一下就扔过去糊 TA 一脸。番茄雨、烟花在自己小人下面点两下（全房间生效）；雨伞不用点，有存货就会自动挡下一次攻击。</p>
     </section>
 
     <section data-pane="decos" class="hidden">
@@ -122,6 +122,8 @@
         <div id="bubble" class="hit">⌨ <b id="myCount">0</b></div>
         <div id="myChest" class="chest-bubble hit hidden"></div>
       </div>
+      <!-- Room-wide items, umbrellas and the 免打扰 switch; hidden while there's none of them. -->
+      <div id="myItems" class="me-items hidden"></div>
       <div class="me-name">
         <div id="myName"></div>
         <button id="myUpdate" class="hit hidden" title="有新版本，点击查看更新内容">🆕 新版本</button>

@@ -23,8 +23,14 @@ use tokio_tungstenite::tungstenite::Message;
 pub const PROTOCOL_VERSION: u64 = 2;
 pub const DEFAULT_PORT: u16 = 23333;
 pub const MAX_PLAYERS: usize = 16;
-pub const ITEM_IDS: [&str; 3] = ["tomato", "ink", "poop"];
-pub const ITEM_NAMES: [&str; 3] = ["番茄", "墨鱼汁", "屎"];
+pub const ITEM_COUNT: usize = 6;
+// v2.2 clients and relays only know the first three; they ignore the others.
+pub const ITEM_IDS: [&str; ITEM_COUNT] = ["tomato", "ink", "poop", "rain", "firework", "umbrella"];
+pub const ITEM_NAMES: [&str; ITEM_COUNT] = ["番茄", "墨鱼汁", "屎", "番茄雨", "烟花", "雨伞"];
+pub const ITEM_KINDS: [ItemKind; ITEM_COUNT] =
+    [ItemKind::Throw, ItemKind::Throw, ItemKind::Throw, ItemKind::Group, ItemKind::Party, ItemKind::Shield];
+/// Index of the umbrella, the one `ItemKind::Shield` item.
+pub const UMBRELLA: usize = 5;
 // Built-in characters; art in ui/assets/characters/<id>/ (sliced by tools/slice-atlas.js).
 pub const CHARACTERS: [&str; 6] = ["claude", "codex", "doubao", "gemini", "deepseek", "kimi"];
 pub const NAME_MAX: usize = 12;
@@ -41,6 +47,9 @@ const SKIN_CHANGE_EVERY: Duration = Duration::from_secs(10);
 const EMPTY_ROOM_TTL: Duration = Duration::from_secs(30 * 60);
 const THROWS_PER_WINDOW: usize = 3;
 const THROW_WINDOW: Duration = Duration::from_secs(1);
+// Per player, so one person can't keep the whole room covered.
+const GROUP_COOLDOWN: Duration = Duration::from_secs(60);
+const PARTY_COOLDOWN: Duration = Duration::from_secs(10);
 const BROADCAST_INTERVAL: Duration = Duration::from_millis(100);
 const HEARTBEAT: Duration = Duration::from_secs(10);
 const DEAD_AFTER: Duration = Duration::from_secs(25);
@@ -50,6 +59,38 @@ const OUTBOX: usize = 64; // queued messages per client before it's considered s
 const CLOSE_GRACE: Duration = Duration::from_secs(1);
 /// Error replies the client should retry later instead of giving up.
 const RETRYABLE: &str = "retry";
+
+/// How an item is used.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ItemKind {
+    /// Thrown at one player.
+    Throw,
+    /// Hits everyone else in the room.
+    Group,
+    /// A show for the whole room, the sender included; not an attack.
+    Party,
+    /// Never thrown: blocks the next attack on whoever holds one, and is used up doing so.
+    Shield,
+}
+
+impl ItemKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ItemKind::Throw => "throw",
+            ItemKind::Group => "group",
+            ItemKind::Party => "party",
+            ItemKind::Shield => "shield",
+        }
+    }
+
+    fn cooldown(self) -> Duration {
+        match self {
+            ItemKind::Group => GROUP_COOLDOWN,
+            ItemKind::Party => PARTY_COOLDOWN,
+            ItemKind::Throw | ItemKind::Shield => Duration::ZERO,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ServerOptions {
@@ -107,13 +148,28 @@ struct Player {
     decos: Vec<String>,
     /// Whether their cosmetics chest can be opened right now (shown to the room; the timer stays private).
     chest: bool,
+    /// 免打扰: hits don't cover their screen (shown to the room).
+    dnd: bool,
     count: u64,
     typing: bool,
-    inv: [u64; 3],
+    inv: [u64; ITEM_COUNT],
+    /// Umbrellas used up blocking attacks on this connection. Clients report how many blocks
+    /// they've heard about, so an inventory sent before hearing of one doesn't bring it back.
+    blocked: u64,
     throws: VecDeque<Instant>,
+    used_at: [Option<Instant>; ITEM_COUNT],
     budget: f64,
     budget_at: Instant,
     skin_changed_at: Option<Instant>,
+}
+
+impl Player {
+    /// Takes the inventory a client sent (`inv` + `blocks`) with a status or a throw.
+    fn set_inv(&mut self, msg: &Value) {
+        self.inv = clean_inv(&msg["inv"]);
+        let unheard = self.blocked.saturating_sub(clamp_num(&msg["blocks"], 1e9));
+        self.inv[UMBRELLA] = self.inv[UMBRELLA].saturating_sub(unheard);
+    }
 }
 
 #[derive(Default)]
@@ -188,7 +244,7 @@ impl Room {
                     json!({
                         "id": id, "name": p.name, "char": p.character,
                         "skinRev": if p.skin.is_some() { p.skin_rev } else { 0 }, "deco": p.decos.first().map_or("", |d| d.as_str()), "decos": p.decos, "chest": p.chest,
-                        "count": p.count, "typing": p.typing, "inv": inv_json(&p.inv),
+                        "dnd": p.dnd, "count": p.count, "typing": p.typing, "inv": inv_json(&p.inv),
                     })
                 })
                 .collect(),
@@ -196,7 +252,7 @@ impl Room {
     }
 }
 
-fn inv_json(inv: &[u64; 3]) -> Value {
+fn inv_json(inv: &[u64; ITEM_COUNT]) -> Value {
     let mut m = Map::new();
     for (i, id) in ITEM_IDS.iter().enumerate() {
         m.insert((*id).into(), inv[i].into());
@@ -259,8 +315,8 @@ fn clamp_num(v: &Value, max: f64) -> u64 {
     }
 }
 
-pub fn clean_inv(v: &Value) -> [u64; 3] {
-    let mut out = [0; 3];
+pub fn clean_inv(v: &Value) -> [u64; ITEM_COUNT] {
+    let mut out = [0; ITEM_COUNT];
     for (i, id) in ITEM_IDS.iter().enumerate() {
         out[i] = clamp_num(v.get(*id).unwrap_or(&Value::Null), 99_999.0);
     }
@@ -570,16 +626,20 @@ fn on_hello(
         skin,
         decos: clean_worn(msg),
         chest: false,
+        dnd: false,
         count,
         typing: false,
         inv: clean_inv(&msg["inv"]),
+        blocked: 0,
         throws: VecDeque::new(),
+        used_at: [None; ITEM_COUNT],
         budget: MAX_KEYS_PER_SECOND, // one second's worth to start with
         budget_at: now,
         skin_changed_at: None,
     };
 
-    push(tx, kill, &json!({ "t": "welcome", "you": id, "max": MAX_PLAYERS }));
+    // "items": what this server supports (v2.2 servers don't send it).
+    push(tx, kill, &json!({ "t": "welcome", "you": id, "max": MAX_PLAYERS, "items": ITEM_IDS }));
     // Everyone's custom skins to the newcomer, and the newcomer's to everyone.
     for (oid, other) in &room.players {
         if let Some(s) = &other.skin {
@@ -619,7 +679,8 @@ fn on_message(shared: &Shared, conn: u64, code: &str, id: &str, msg: &Value) {
             p.count = if next < p.count { next } else { p.count + granted };
             p.typing = msg["typing"].as_bool().unwrap_or(false);
             p.chest = msg["chest"].as_bool().unwrap_or(false);
-            p.inv = clean_inv(&msg["inv"]);
+            p.dnd = msg["dnd"].as_bool().unwrap_or(false);
+            p.set_inv(msg);
             room.dirty = true;
         }
         Some("profile") => {
@@ -652,21 +713,30 @@ fn on_message(shared: &Shared, conn: u64, code: &str, id: &str, msg: &Value) {
                 push(&p.tx, &p.kill, &json!({ "t": "throwResult", "seq": msg["seq"], "ok": ok, "item": msg["item"], "target": msg["target"], "text": text }));
             };
             let target_name = room.players.get(target).map(|t| t.name.clone());
+            let alone = room.players.len() < 2;
             let p = room.players.get_mut(id).unwrap();
             // The wallet is client-owned; the throw carries the inventory it was made with, so a
             // status update still in flight (e.g. right after buying) can't cause a false "没有了".
             if msg.get("inv").is_some_and(Value::is_object) {
-                p.inv = clean_inv(&msg["inv"]);
+                p.set_inv(msg);
             }
             let Some(item) = item else { return reply(p, false, "未知道具") };
-            let Some(target_name) = target_name else { return reply(p, false, "对方已离线") };
-            if target == id {
-                return reply(p, false, "不能扔自己");
+            let kind = ITEM_KINDS[item];
+            match kind {
+                ItemKind::Shield => return reply(p, false, "雨伞不用扔，有存货就会自动挡"),
+                ItemKind::Throw if target_name.is_none() => return reply(p, false, "对方已离线"),
+                ItemKind::Throw if target == id => return reply(p, false, "不能扔自己"),
+                ItemKind::Group if alone => return reply(p, false, "房间里没有别人"),
+                _ => {}
             }
             if p.inv[item] < 1 {
                 return reply(p, false, &format!("没有{}了", ITEM_NAMES[item]));
             }
             let now = Instant::now();
+            let wait = p.used_at[item].map_or(Duration::ZERO, |t| kind.cooldown().saturating_sub(now.duration_since(t)));
+            if !wait.is_zero() {
+                return reply(p, false, &format!("{}还要等 {} 秒", ITEM_NAMES[item], wait.as_secs_f64().ceil()));
+            }
             while p.throws.front().is_some_and(|t| now.duration_since(*t) >= THROW_WINDOW) {
                 p.throws.pop_front();
             }
@@ -674,9 +744,34 @@ fn on_message(shared: &Shared, conn: u64, code: &str, id: &str, msg: &Value) {
                 return reply(p, false, "扔太快啦，歇一下");
             }
             p.throws.push_back(now);
+            p.used_at[item] = Some(now);
             p.inv[item] -= 1;
             reply(p, true, "");
-            let hit = json!({ "t": "hit", "item": ITEM_IDS[item], "from": id, "fromName": p.name, "to": target, "toName": target_name });
+            let from_name = p.name.clone();
+            let attacked: Vec<String> = match kind {
+                ItemKind::Throw => vec![target.to_string()],
+                ItemKind::Group => room.players.keys().filter(|k| k.as_str() != id).cloned().collect(),
+                ItemKind::Party | ItemKind::Shield => Vec::new(),
+            };
+            // Whoever holds an umbrella blocks the attack and uses one up.
+            let (mut targets, mut blocked) = (Vec::new(), Vec::new());
+            for t in attacked {
+                let Some(tp) = room.players.get_mut(&t) else { continue };
+                if tp.inv[UMBRELLA] > 0 {
+                    tp.inv[UMBRELLA] -= 1;
+                    tp.blocked += 1;
+                    blocked.push(t);
+                } else {
+                    targets.push(t);
+                }
+            }
+            let single = kind == ItemKind::Throw;
+            let hit = json!({
+                "t": "hit", "item": ITEM_IDS[item], "from": id, "fromName": from_name,
+                // A single throw's target, which is all v2.2 clients read.
+                "to": if single { target } else { "" }, "toName": target_name.filter(|_| single).unwrap_or_default(),
+                "targets": targets, "blocked": blocked,
+            });
             room.dirty = true;
             room.broadcast(&hit);
         }
@@ -715,7 +810,8 @@ mod tests {
         assert!(clean_skin(&json!({ "idle": "data:image/png;base64,AAAA", "typing": "data:image/gif;base64,AA==" })).is_some());
         assert!(clean_skin(&json!({ "idle": "file://x/y.png", "typing": "data:image/png;base64,AAAA" })).is_none());
         assert!(clean_skin(&json!({ "idle": "data:image/png;base64,<script>", "typing": "data:image/png;base64,AAAA" })).is_none());
-        assert_eq!(clean_inv(&json!({ "tomato": 2.7, "ink": -3, "poop": "x" })), [2, 0, 0]);
+        assert_eq!(clean_inv(&json!({ "tomato": 2.7, "ink": -3, "poop": "x", "umbrella": 1 })), [2, 0, 0, 0, 0, 1]);
+        assert_eq!((ITEM_IDS[UMBRELLA], ITEM_KINDS[UMBRELLA]), ("umbrella", ItemKind::Shield));
         assert_eq!(clean_deco(&json!("party-red")), "party-red");
         assert_eq!(clean_deco(&json!("Bad Id")), "");
         assert_eq!(clean_deco(&json!(3)), "");

@@ -1,10 +1,19 @@
 'use strict';
 /* global api */
-// Full-screen, click-through layer that draws the "splat on your face" effects.
+// Full-screen, click-through layer that draws item effects: splats on your face, tomato rain and
+// fireworks. Each must be gone within SPLAT_LIFETIME (main.rs).
 
 const STAY_MS = 6000;
 const FADE_MS = 1000;
 const FLIGHT_MS = 380;
+// Tomato rain: small splats falling from the top, landing over RAIN_SPREAD_MS.
+const RAIN_DROPS = [7, 10];
+const RAIN_SPREAD_MS = 1200;
+const RAIN_FALL_MS = 550;
+const RAIN_STAY_MS = 4500;
+// Fireworks: shells go up until FIREWORKS_MS, then the last sparks burn out.
+const FIREWORKS_MS = 3400;
+const SHELL_RISE_MS = 900;
 
 const THEMES = {
   tomato: { emoji: '🍅', name: '番茄', main: '#e53935', dark: '#b71c1c', light: '#ff7961', drips: [2, 4], dripLen: [60, 160] },
@@ -144,11 +153,43 @@ function banner(text) {
   setTimeout(() => b.remove(), 4000);
 }
 
+// Every effect calls this once when it's completely gone.
+function done() {
+  active -= 1;
+  if (active === 0) api.overlayIdle(seen);
+}
+
+function missile(emoji, cls) {
+  const m = document.createElement('div');
+  m.className = cls;
+  m.textContent = emoji;
+  document.body.append(m);
+  return m;
+}
+
+// Sticks a splat centred on (tx, ty); it fades out after `stay` ms, then calls gone().
+function stick(item, r, tx, ty, stay, gone) {
+  const { svg, W, cx, cy } = buildSplat(item, r);
+  const wrap = document.createElement('div');
+  wrap.className = 'splat in';
+  wrap.style.setProperty('--rot', `${randInt(-25, 25)}deg`);
+  wrap.style.left = `${tx - cx}px`;
+  wrap.style.top = `${ty - cy}px`;
+  wrap.style.width = `${W}px`;
+  wrap.style.transformOrigin = `${cx}px ${cy}px`;
+  wrap.innerHTML = svg; // generated markup only, contains no user text
+  document.body.append(wrap);
+  setTimeout(() => {
+    wrap.classList.replace('in', 'out');
+    setTimeout(() => {
+      wrap.remove();
+      gone();
+    }, FADE_MS);
+  }, stay);
+}
+
 function splat({ item, fromName }) {
   const t = THEMES[item];
-  seen += 1;
-  if (!t) return;
-  active += 1;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const r = Math.min(vw, vh) * rand(0.16, 0.23);
@@ -156,10 +197,7 @@ function splat({ item, fromName }) {
   const ty = rand(vh * 0.18, vh * 0.7);
 
   // The item flies in from a random screen edge.
-  const m = document.createElement('div');
-  m.className = 'missile';
-  m.textContent = t.emoji;
-  document.body.append(m);
+  const m = missile(t.emoji, 'missile');
   const fromLeft = Math.random() < 0.5;
   const sx = fromLeft ? -160 : vw + 30;
   const sy = rand(vh * 0.2, vh * 0.9);
@@ -168,26 +206,156 @@ function splat({ item, fromName }) {
     { transform: `translate(${tx - 65}px, ${ty - 65}px) rotate(${fromLeft ? 540 : -540}deg) scale(1.3)` },
   ], { duration: FLIGHT_MS, easing: 'cubic-bezier(.5,0,1,1)' }).onfinish = () => {
     m.remove();
-    const { svg, W, cx, cy } = buildSplat(item, r);
-    const wrap = document.createElement('div');
-    wrap.className = 'splat in';
-    wrap.style.setProperty('--rot', `${randInt(-25, 25)}deg`);
-    wrap.style.left = `${tx - cx}px`;
-    wrap.style.top = `${ty - cy}px`;
-    wrap.style.width = `${W}px`;
-    wrap.style.transformOrigin = `${cx}px ${cy}px`;
-    wrap.innerHTML = svg; // generated markup only, contains no user text
-    document.body.append(wrap);
+    stick(item, r, tx, ty, STAY_MS, done);
     banner(`${fromName} 用${t.name}糊了你一脸！`);
-    setTimeout(() => {
-      wrap.classList.replace('in', 'out');
-      setTimeout(() => {
-        wrap.remove();
-        active -= 1;
-        if (active === 0) api.overlayIdle(seen);
-      }, FADE_MS);
-    }, STAY_MS);
   };
 }
 
-api.on('splat', splat);
+// Small tomatoes pelting down all over the screen.
+function rain({ fromName }) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const n = randInt(RAIN_DROPS[0], RAIN_DROPS[1]);
+  let left = n;
+  banner(`${fromName} 下了一场番茄雨！`);
+  for (let k = 0; k < n; k++) {
+    setTimeout(() => {
+      const r = Math.min(vw, vh) * rand(0.07, 0.11);
+      const tx = rand(vw * 0.06, vw * 0.94);
+      const ty = rand(vh * 0.12, vh * 0.85);
+      const m = missile(THEMES.tomato.emoji, 'missile small');
+      m.animate([
+        { transform: `translate(${tx - 32}px, -90px) rotate(0deg)` },
+        { transform: `translate(${tx - 32}px, ${ty - 32}px) rotate(${randInt(-240, 240)}deg)` },
+      ], { duration: RAIN_FALL_MS, easing: 'cubic-bezier(.55,0,1,.45)' }).onfinish = () => {
+        m.remove();
+        stick('tomato', r, tx, ty, RAIN_STAY_MS, () => {
+          left -= 1;
+          if (left === 0) done();
+        });
+      };
+    }, (k / n) * RAIN_SPREAD_MS + rand(0, 100));
+  }
+}
+
+// Shells rise from the bottom and burst into sparks that droop and fade, leaving trails.
+function fireworks({ fromName, mine }) {
+  banner(mine ? '🎆 你放了一场烟花！' : `🎆 ${fromName} 放了一场烟花！`);
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const dpr = window.devicePixelRatio || 1;
+  const canvas = document.createElement('canvas');
+  canvas.className = 'sky';
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  document.body.append(canvas);
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const dot = (x, y, r, color, alpha) => {
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  };
+
+  const count = randInt(6, 8);
+  const shells = [];
+  for (let k = 0; k < count; k++) {
+    const hue = randInt(0, 359);
+    shells.push({
+      at: (k / count) * (FIREWORKS_MS - SHELL_RISE_MS) + rand(0, 200),
+      x: rand(W * 0.1, W * 0.9),
+      top: rand(H * 0.1, H * 0.4),
+      hue,
+      hue2: Math.random() < 0.35 ? (hue + 150) % 360 : hue, // some shells are two-coloured
+      crackle: Math.random() < 0.4, // sparks twinkle as they die out
+      burst: false,
+    });
+  }
+  const sparks = [];
+  const flashes = [];
+  const gravity = H * 0.12; // px/s²
+  const t0 = performance.now();
+  let last = t0;
+  const frame = (now) => {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    const t = now - t0;
+    last = now;
+    // Fade what's there instead of clearing it, so everything leaves a trail.
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = 'rgba(0, 0, 0, .14)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'lighter';
+    for (const s of shells) {
+      if (s.burst || t < s.at) continue;
+      const p = Math.min(1, (t - s.at) / SHELL_RISE_MS);
+      const y = H + 20 - (H + 20 - s.top) * (1 - (1 - p) ** 3);
+      dot(s.x + Math.sin(p * 12) * 2, y, 3, `hsl(${s.hue}, 100%, 85%)`, 1);
+      if (p < 1) continue;
+      s.burst = true;
+      const n = randInt(90, 130);
+      const speed = Math.min(W, H) * rand(0.3, 0.42);
+      flashes.push({ x: s.x, y: s.top, r: speed * 0.45, hue: s.hue, t: 0 });
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + rand(-0.05, 0.05);
+        const v = speed * rand(0.45, 1);
+        const life = rand(1.3, 2);
+        const hue = (i % 2 ? s.hue2 : s.hue) + randInt(-15, 15);
+        sparks.push({ x: s.x, y: s.top, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life, max: life, hue, crackle: s.crackle });
+      }
+    }
+    for (let i = flashes.length - 1; i >= 0; i--) {
+      const fl = flashes[i];
+      fl.t += dt;
+      const a = 1 - fl.t / 0.3;
+      if (a <= 0) {
+        flashes.splice(i, 1);
+        continue;
+      }
+      const g = ctx.createRadialGradient(fl.x, fl.y, 0, fl.x, fl.y, fl.r);
+      g.addColorStop(0, `hsla(${fl.hue}, 100%, 95%, ${0.5 * a})`);
+      g.addColorStop(1, `hsla(${fl.hue}, 100%, 60%, 0)`);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = g;
+      ctx.fillRect(fl.x - fl.r, fl.y - fl.r, fl.r * 2, fl.r * 2);
+    }
+    const drag = 0.3 ** dt;
+    for (let i = sparks.length - 1; i >= 0; i--) {
+      const k = sparks[i];
+      k.life -= dt;
+      if (k.life <= 0) {
+        sparks.splice(i, 1);
+        continue;
+      }
+      k.vx *= drag;
+      k.vy = k.vy * drag + gravity * dt;
+      k.x += k.vx * dt;
+      k.y += k.vy * dt;
+      const a = k.life / k.max;
+      const twinkle = k.crackle && a < 0.5 && Math.random() < 0.4 ? 0.2 : 1;
+      dot(k.x, k.y, 1.6 + a * 2.4, `hsl(${k.hue}, 100%, ${55 + a * 30}%)`, a * twinkle);
+    }
+    if (sparks.length || flashes.length || shells.some((s) => !s.burst)) {
+      requestAnimationFrame(frame);
+    } else {
+      canvas.remove();
+      done();
+    }
+  };
+  requestAnimationFrame(frame);
+}
+
+const EFFECTS = { rain, firework: fireworks };
+
+api.on('effect', (e) => {
+  seen += 1;
+  const play = EFFECTS[e.item] || (THEMES[e.item] && splat);
+  if (!play) {
+    if (active === 0) api.overlayIdle(seen);
+    return;
+  }
+  active += 1;
+  play(e);
+});

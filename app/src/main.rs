@@ -13,7 +13,10 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cofisher_server::{clean_skin, ServerHandle, ServerOptions, CHARACTERS, ITEM_IDS, MAX_PLAYERS, NAME_MAX};
+use cofisher_server::{
+    clean_skin, ItemKind, ServerHandle, ServerOptions, CHARACTERS, ITEM_COUNT, ITEM_IDS, ITEM_KINDS, MAX_PLAYERS, NAME_MAX,
+    UMBRELLA,
+};
 use serde_json::{json, Value};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -34,7 +37,7 @@ const TICK: Duration = Duration::from_millis(25); // short so each key press sho
 const STATUS_EVERY: Duration = Duration::from_millis(150);
 const SAVE_EVERY: Duration = Duration::from_secs(2);
 const CURSOR_POLL: Duration = Duration::from_millis(40);
-const SPLAT_LIFETIME: Duration = Duration::from_millis(7600); // flight + stay + fade in overlay.js
+const SPLAT_LIFETIME: Duration = Duration::from_millis(7600); // longest effect in overlay.js
 const MAX_ACTIVE_SPLATS: usize = 5;
 const UPDATE_FIRST_CHECK: Duration = Duration::from_secs(8);
 const UPDATE_EVERY: Duration = Duration::from_secs(3600);
@@ -45,13 +48,20 @@ struct Item {
     name: &'static str,
     emoji: &'static str,
     cost: u64,
+    desc: &'static str,
 }
 
-const ITEMS: [Item; 3] = [
-    Item { id: "tomato", name: "番茄", emoji: "🍅", cost: 50 },
-    Item { id: "ink", name: "墨鱼汁", emoji: "🦑", cost: 100 },
-    Item { id: "poop", name: "屎", emoji: "💩", cost: 200 },
+// Same order as ITEM_IDS.
+const ITEMS: [Item; ITEM_COUNT] = [
+    Item { id: "tomato", name: "番茄", emoji: "🍅", cost: 50, desc: "" },
+    Item { id: "ink", name: "墨鱼汁", emoji: "🦑", cost: 100, desc: "" },
+    Item { id: "poop", name: "屎", emoji: "💩", cost: 200, desc: "" },
+    Item { id: "rain", name: "番茄雨", emoji: "🌧️", cost: 1000, desc: "糊房间里所有人" },
+    Item { id: "firework", name: "烟花", emoji: "🎆", cost: 300, desc: "全房间一起看" },
+    Item { id: "umbrella", name: "雨伞", emoji: "☂️", cost: 150, desc: "自动挡下一次攻击" },
 ];
+/// A server whose welcome doesn't list its items (v2.2) knows the first three.
+const OLD_SERVER_ITEMS: usize = 3;
 
 // Display name + description, in the same order as CHARACTERS.
 const CHARACTER_INFO: [(&str, &str); 6] = [
@@ -76,6 +86,10 @@ struct Inner {
     skins: HashMap<String, Value>, // player id -> { rev, skin }
     pending_throws: HashMap<u64, usize>,
     throw_seq: u64,
+    /// Items the room's server supports.
+    server_items: Vec<&'static str>,
+    /// Umbrella blocks heard about on this connection (see `blocked` in the server).
+    blocks_seen: u64,
     splat_times: VecDeque<Instant>,
     splats_sent: u64,
     overlay_shown: bool,
@@ -186,7 +200,11 @@ async fn init(state: St<'_>) -> Result<Value, ()> {
     let i = state.inner.lock().unwrap();
     let items: serde_json::Map<String, Value> = ITEMS
         .iter()
-        .map(|it| (it.id.to_string(), json!({ "id": it.id, "name": it.name, "emoji": it.emoji, "cost": it.cost })))
+        .zip(ITEM_KINDS)
+        .map(|(it, kind)| {
+            let v = json!({ "id": it.id, "name": it.name, "emoji": it.emoji, "cost": it.cost, "kind": kind.as_str(), "desc": it.desc });
+            (it.id.to_string(), v)
+        })
         .collect();
     let characters: Vec<Value> = CHARACTERS
         .iter()
@@ -197,6 +215,8 @@ async fn init(state: St<'_>) -> Result<Value, ()> {
         "me": { "id": i.config.id, "name": i.config.name, "char": i.config.character, "skin": i.skin },
         "wallet": i.wallet(),
         "items": items,
+        "serverItems": i.server_items,
+        "dnd": i.config.dnd,
         "characters": characters,
         "maxPlayers": MAX_PLAYERS,
         "joinAddress": i.config.join_address,
@@ -466,20 +486,27 @@ fn equip_deco(state: St<'_>, slot: String, id: String) -> Value {
     json!({ "ok": true, "decoState": i.deco_state() })
 }
 
+/// `target` is ignored for room-wide items (番茄雨, 烟花).
 #[tauri::command]
 fn throw_item(app: AppHandle, state: St<'_>, item: String, target: String) -> Value {
     let Some(idx) = item_index(&item) else { return json!({ "ok": false, "error": "未知道具" }) };
+    if ITEM_KINDS[idx] == ItemKind::Shield {
+        return json!({ "ok": false, "error": "雨伞不用扔，有存货就会自动挡" });
+    }
     if state.net.state() != "online" {
         return json!({ "ok": false, "error": "还没联机哦" });
     }
     let mut i = state.inner.lock().unwrap();
+    if !i.server_items.contains(&ITEMS[idx].id) {
+        return json!({ "ok": false, "error": format!("房主或中转服务器版本较旧，用不了{}", ITEMS[idx].name) });
+    }
     if i.config.inv.get(idx) < 1 {
         return json!({ "ok": false, "error": format!("没有{}了，先去兑换", ITEMS[idx].name) });
     }
     i.throw_seq += 1;
     let seq = i.throw_seq;
     // The inventory *before* this throw travels with it; the server checks and deducts from it.
-    let msg = json!({ "t": "throw", "seq": seq, "item": item, "target": target, "inv": i.config.inv.to_json() });
+    let msg = json!({ "t": "throw", "seq": seq, "item": item, "target": target, "inv": i.config.inv.to_json(), "blocks": i.blocks_seen });
     // Optimistic: deducted now, refunded if the server rejects or the connection drops.
     *i.config.inv.get_mut(idx) -= 1;
     if !state.net.send(&msg) {
@@ -638,6 +665,11 @@ fn hide_overlay(app: &AppHandle, state: &AppState) {
 }
 
 #[tauri::command]
+fn set_dnd(app: AppHandle, on: bool) {
+    apply_dnd(&app, on);
+}
+
+#[tauri::command]
 fn quit(app: AppHandle, state: St<'_>) {
     config::save(&state.inner.lock().unwrap().config);
     app.exit(0);
@@ -663,6 +695,7 @@ fn clean_player(p: &Value) -> Option<Value> {
         "count": non_neg(&p["count"]),
         "typing": p["typing"].as_bool().unwrap_or(false),
         "chest": p["chest"].as_bool().unwrap_or(false),
+        "dnd": p["dnd"].as_bool().unwrap_or(false),
         "inv": inv,
     }))
 }
@@ -708,7 +741,19 @@ fn on_net_event(app: &AppHandle, ev: NetEvent) {
             }
             let _ = app.emit("net-status", json!({ "state": s, "text": text }));
         }
-        NetEvent::Welcome => state.inner.lock().unwrap().last_status.clear(), // resend our status
+        NetEvent::Welcome(msg) => {
+            let items: Vec<&'static str> = match msg["items"].as_array() {
+                Some(list) => ITEM_IDS.iter().copied().filter(|id| list.iter().any(|v| v.as_str() == Some(id))).collect(),
+                None => ITEM_IDS[..OLD_SERVER_ITEMS].to_vec(),
+            };
+            {
+                let mut i = state.inner.lock().unwrap();
+                i.last_status.clear(); // resend our status
+                i.blocks_seen = 0; // counted per connection
+                i.server_items = items.clone();
+            }
+            let _ = app.emit("server-items", items);
+        }
         NetEvent::State(list) => {
             let players: Vec<Value> = list.iter().take(MAX_PLAYERS).filter_map(clean_player).collect();
             let gone: Vec<String> = {
@@ -743,26 +788,7 @@ fn on_net_event(app: &AppHandle, ev: NetEvent) {
         NetEvent::Log(text) => {
             let _ = app.emit("log", text);
         }
-        NetEvent::Hit(raw) => {
-            let Some(idx) = raw["item"].as_str().and_then(item_index) else { return };
-            let name = |v: &Value| v.as_str().unwrap_or("").chars().take(NAME_MAX).collect::<String>();
-            let hit = json!({
-                "item": ITEM_IDS[idx],
-                "from": raw["from"].as_str().unwrap_or(""),
-                "to": raw["to"].as_str().unwrap_or(""),
-                "fromName": name(&raw["fromName"]),
-                "toName": name(&raw["toName"]),
-            });
-            let me = state.inner.lock().unwrap().config.id.clone();
-            let item = &ITEMS[idx];
-            if hit["to"] == me.as_str() {
-                show_splat(app, &state, &hit);
-                let _ = app.emit("log", format!("💥 {} 用{}糊了你一脸！", hit["fromName"].as_str().unwrap_or(""), item.name));
-            } else {
-                let _ = app.emit("log", format!("{} 用{}糊了 {} 一脸", hit["fromName"].as_str().unwrap_or(""), item.name, hit["toName"].as_str().unwrap_or("")));
-            }
-            let _ = app.emit("hit", hit);
-        }
+        NetEvent::Hit(raw) => on_hit(app, &state, &raw),
         NetEvent::ThrowResult(r) => {
             let Some(seq) = r["seq"].as_u64() else { return };
             let mut i = state.inner.lock().unwrap();
@@ -780,20 +806,91 @@ fn on_net_event(app: &AppHandle, ev: NetEvent) {
     }
 }
 
-fn show_splat(app: &AppHandle, state: &AppState, hit: &Value) {
+/// Something was thrown in the room: a single throw, a room-wide item, or one blocked by umbrellas.
+fn on_hit(app: &AppHandle, state: &AppState, raw: &Value) {
+    let Some(idx) = raw["item"].as_str().and_then(item_index) else { return };
+    let (item, kind) = (&ITEMS[idx], ITEM_KINDS[idx]);
+    let text = |v: &Value, max: usize| v.as_str().unwrap_or("").chars().take(max).collect::<String>();
+    let ids = |v: &Value| -> Vec<String> {
+        let list = v.as_array().into_iter().flatten().filter_map(Value::as_str);
+        list.take(MAX_PLAYERS).map(|s| s.chars().take(64).collect()).collect()
+    };
+    let (from, from_name) = (text(&raw["from"], 64), text(&raw["fromName"], NAME_MAX));
+    let (to, to_name) = (text(&raw["to"], 64), text(&raw["toName"], NAME_MAX));
+    // v2.2 servers only relay single throws, without these lists.
+    let (targets, blocked) = match raw.get("targets") {
+        Some(t) => (ids(t), ids(&raw["blocked"])),
+        None => (vec![to.clone()], Vec::new()),
+    };
+    let me = state.inner.lock().unwrap().config.id.clone();
+    let mine = from == me;
+    let hit_me = kind == ItemKind::Party || targets.contains(&me);
+    let umbrellas_left = blocked.contains(&me).then(|| use_umbrella(app, state));
+    let hit = json!({
+        "item": item.id, "kind": kind.as_str(), "from": from, "fromName": from_name, "to": to, "toName": to_name,
+        "targets": targets, "blocked": blocked, "mine": mine,
+    });
+    let quiet = hit_me && !show_effect(app, state, &hit);
+
+    let (name, emoji) = (item.name, item.emoji);
+    let thrower = if mine { "你".to_string() } else { format!(" {from_name} ") };
+    let dodged = if blocked.is_empty() { String::new() } else { format!("，{} 人撑伞躲过", blocked.len()) };
+    let mut line = match (kind, umbrellas_left) {
+        (ItemKind::Group, Some(left)) => format!("☂️ {from_name} 下了一场{name}，被你的雨伞挡住了（还剩 {left} 把）"),
+        (_, Some(left)) => format!("☂️ 你的雨伞挡住了 {from_name} 的{name}（还剩 {left} 把）"),
+        (ItemKind::Party, _) => format!("{emoji} {} 放了一场{name}！", thrower.trim()),
+        (ItemKind::Group, _) if mine => format!("{emoji} 你下了一场{name}，糊中 {} 人{dodged}", targets.len()),
+        (ItemKind::Group, _) if hit_me => format!("{emoji} {from_name} 下了一场{name}，你被淋了一脸！"),
+        (ItemKind::Group, _) => format!("{emoji} {from_name} 下了一场{name}{dodged}"),
+        _ if hit_me => format!("💥 {from_name} 用{name}糊了你一脸！"),
+        _ if !blocked.is_empty() => format!("☂️ {to_name} 用雨伞挡住了{thrower}的{name}"),
+        _ => format!("{from_name} 用{name}糊了 {to_name} 一脸"),
+    };
+    if quiet {
+        line.push_str("（免打扰）");
+    }
+    let _ = app.emit("log", line);
+    let _ = app.emit("hit", hit);
+}
+
+/// The server used up one of our umbrellas blocking an attack; returns how many are left.
+fn use_umbrella(app: &AppHandle, state: &AppState) -> u64 {
+    let mut i = state.inner.lock().unwrap();
+    let left = i.config.inv.get(UMBRELLA).saturating_sub(1);
+    *i.config.inv.get_mut(UMBRELLA) = left;
+    i.blocks_seen += 1;
+    i.touch();
+    i.status_soon();
+    let w = i.wallet();
+    drop(i);
+    let _ = app.emit("wallet", w);
+    left
+}
+
+/// Plays an item's effect on the full-screen overlay. Returns false when it was kept off the
+/// screen for 免打扰 (switched on, or a full-screen app / presentation in front).
+fn show_effect(app: &AppHandle, state: &AppState, hit: &Value) -> bool {
+    let (dnd, overlay_up) = {
+        let i = state.inner.lock().unwrap();
+        (i.config.dnd, i.overlay_shown)
+    };
+    // Only asked while the overlay is hidden: covering the screen, it might count as full-screen.
+    if dnd || (!overlay_up && win::user_busy()) {
+        return false;
+    }
     {
         let mut i = state.inner.lock().unwrap();
         while i.splat_times.front().is_some_and(|t| t.elapsed() > SPLAT_LIFETIME) {
             i.splat_times.pop_front();
         }
         if i.splat_times.len() >= MAX_ACTIVE_SPLATS {
-            return; // the screen is covered enough already
+            return true; // the screen is covered enough already
         }
         i.splat_times.push_back(Instant::now());
         i.splats_sent += 1;
         i.overlay_shown = true;
     }
-    let Some(ov) = app.get_webview_window("overlay") else { return };
+    let Some(ov) = app.get_webview_window("overlay") else { return true };
     // Cover the monitor the pet is on.
     let monitor = app
         .get_webview_window("pet")
@@ -806,7 +903,8 @@ fn show_splat(app: &AppHandle, state: &AppState, hit: &Value) {
         // Moving onto a monitor with another DPI makes Windows rescale the window; set it again.
         win::show_no_activate(hwnd, rect);
     }
-    let _ = app.emit_to("overlay", "splat", hit);
+    let _ = app.emit_to("overlay", "effect", hit);
+    true
 }
 
 // ---------------------------------------------------------------- windows / tray
@@ -848,6 +946,8 @@ fn toggle_pet(app: &AppHandle) {
 }
 
 fn create_windows(app: &AppHandle) -> tauri::Result<()> {
+    // A hidden owner keeps both windows off the taskbar and out of Alt+Tab (tray icon only).
+    let owner = win::hidden_owner().map_err(std::io::Error::from)?;
     // Created visible + unfocused so Tauri shows it without stealing focus *and* records it as
     // visible. (Showing it via raw Win32 instead makes Tauri hide it again on the next style
     // change, e.g. toggling click-through.) The builder takes logical coordinates.
@@ -861,7 +961,7 @@ fn create_windows(app: &AppHandle) -> tauri::Result<()> {
         .transparent(true)
         .shadow(false)
         .always_on_top(true)
-        .skip_taskbar(true)
+        .owner_raw(owner)
         .visible(true)
         .focused(false);
     if let Some(m) = app.primary_monitor().ok().flatten() {
@@ -898,7 +998,7 @@ fn create_windows(app: &AppHandle) -> tauri::Result<()> {
         .transparent(true)
         .shadow(false)
         .always_on_top(true)
-        .skip_taskbar(true)
+        .owner_raw(owner)
         .resizable(false)
         .visible(false)
         .focused(false)
@@ -908,12 +1008,32 @@ fn create_windows(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// The tray's 免打扰 item, kept so that switching it off from the pet unticks it too.
+struct DndItem(CheckMenuItem<tauri::Wry>);
+
+fn apply_dnd(app: &AppHandle, on: bool) {
+    {
+        let st = app.state::<Arc<AppState>>();
+        let mut i = st.inner.lock().unwrap();
+        i.config.dnd = on;
+        i.touch();
+        i.status_soon(); // friends see the 🔕
+    }
+    if let Some(item) = app.try_state::<DndItem>() {
+        let _ = item.0.set_checked(on);
+    }
+    let _ = app.emit("dnd", on);
+}
+
 fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let toggle = MenuItem::with_id(app, "toggle", "显示 / 隐藏小人", true, None::<&str>)?;
     let reset = MenuItem::with_id(app, "reset", "回到右下角", true, None::<&str>)?;
+    let dnd_on = app.state::<Arc<AppState>>().inner.lock().unwrap().config.dnd;
+    let dnd = CheckMenuItem::with_id(app, "dnd", "免打扰（被糊不弹全屏）", true, dnd_on, None::<&str>)?;
     let autostart = CheckMenuItem::with_id(app, "autostart", "开机自启", true, win::autostart_enabled(), None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&toggle, &reset, &autostart, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let menu = Menu::with_items(app, &[&toggle, &reset, &dnd, &autostart, &PredefinedMenuItem::separator(app)?, &quit])?;
+    app.manage(DndItem(dnd.clone()));
     let auto = autostart.clone();
     let mut builder = TrayIconBuilder::with_id("main")
         .tooltip("摸鱼搭子 Co-Fisher")
@@ -922,6 +1042,7 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(move |app, ev| match ev.id().as_ref() {
             "toggle" => toggle_pet(app),
             "reset" => reset_pet_position(app),
+            "dnd" => apply_dnd(app, dnd.is_checked().unwrap_or(false)),
             "autostart" => {
                 let want = auto.is_checked().unwrap_or(false);
                 if win::set_autostart(want).is_err() {
@@ -977,7 +1098,8 @@ async fn tick_loop(app: AppHandle) {
             });
             let status = (i.last_status_at.elapsed() >= STATUS_EVERY).then(|| {
                 let chest = decos::chest_ready(i.config.last_chest_ms, now, i.config.count);
-                json!({ "t": "status", "count": i.config.count, "typing": typing, "inv": i.config.inv.to_json(), "chest": chest })
+                let (inv, blocks) = (i.config.inv.to_json(), i.blocks_seen);
+                json!({ "t": "status", "count": i.config.count, "typing": typing, "inv": inv, "blocks": blocks, "chest": chest, "dnd": i.config.dnd })
             });
             if i.dirty && i.last_save.elapsed() >= SAVE_EVERY {
                 // Throttled rather than debounced, so continuous typing still saves.
@@ -1058,6 +1180,8 @@ fn main() {
             skins: HashMap::new(),
             pending_throws: HashMap::new(),
             throw_seq: 0,
+            server_items: ITEM_IDS.to_vec(),
+            blocks_seen: 0,
             splat_times: VecDeque::new(),
             splats_sent: 0,
             overlay_shown: false,
@@ -1089,7 +1213,7 @@ fn main() {
             init, set_profile, set_skin, clear_skin, host, join, leave,
             steam_status, steam_rooms, steam_invite,
             buy, throw_item, open_chest, merge_decos, equip_deco,
-            check_for_update, apply_update, hit_rects, overlay_idle, quit
+            check_for_update, apply_update, hit_rects, overlay_idle, set_dnd, quit
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

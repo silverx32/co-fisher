@@ -14,6 +14,8 @@ const S = {
   wallet: { count: 0, total: 0, inv: {} },
   typing: false,
   items: {},
+  serverItems: [], // items the room's server supports (older ones know fewer)
+  dnd: false,
   characters: [],
   players: [],
   skins: {}, // playerId -> { rev, skin }
@@ -133,6 +135,7 @@ function renderWallet() {
   renderShop();
   renderChest();
   renderFriendButtons();
+  renderMyItems();
 }
 
 // ---------------------------------------------------------------- friends
@@ -150,7 +153,7 @@ function renderFriends() {
     if (!node) {
       node = el('div', 'friend hit');
       const actions = el('div', 'factions');
-      for (const item of Object.values(S.items)) {
+      for (const item of Object.values(S.items).filter((x) => x.kind === 'throw')) {
         const b = el('button', 'fbtn');
         b.dataset.item = item.id;
         b.title = `扔${item.name}`;
@@ -164,7 +167,7 @@ function renderFriends() {
       avatar.append(el('img', 'deco hidden'), el('img', 'deco hidden'), el('img', 'deco hidden'), img);
       const chest = el('span', 'fchest hidden', '🎁');
       chest.title = 'TA 的宝箱可以开了';
-      node.append(el('span', 'ftyping', '⌨'), chest, avatar, el('div', 'fcount'), el('div', 'fname'), actions);
+      node.append(el('span', 'ftyping', '⌨'), el('span', 'fbadges'), chest, avatar, el('div', 'fcount'), el('div', 'fname'), actions);
       box.append(node);
       friendEls.set(p.id, node);
     }
@@ -172,8 +175,11 @@ function renderFriends() {
     node.querySelector('.fcount').textContent = `⌨ ${p.count}`;
     node.querySelector('.fchest').classList.toggle('hidden', !p.chest);
     node.querySelector('.fname').textContent = p.name;
+    // An umbrella blocks the next throw at them; 免打扰 means it won't cover their screen.
+    node.querySelector('.fbadges').textContent = `${p.inv?.umbrella ? '☂️' : ''}${p.dnd ? '🔕' : ''}`;
     const worn = (p.decos || []).map((id) => decoById.get(id)?.name).filter(Boolean).join('、');
-    node.title = `${p.name}\n点数 ${p.count}\n🍅${p.inv?.tomato ?? 0} 🦑${p.inv?.ink ?? 0} 💩${p.inv?.poop ?? 0}${worn ? `\n装扮：${worn}` : ''}`;
+    const inv = Object.values(S.items).map((it) => `${it.emoji}${p.inv?.[it.id] ?? 0}`).join(' ');
+    node.title = `${p.name}\n点数 ${p.count}\n${inv}${p.dnd ? '\n🔕 免打扰中：被糊只显示在小人身上' : ''}${worn ? `\n装扮：${worn}` : ''}`;
     setWorn(node.querySelector('.avatar'), p.decos || []);
     let ft = friendTaps.get(p.id);
     if (!ft) {
@@ -201,7 +207,7 @@ function renderFriendButtons() {
     for (const b of node.querySelectorAll('.fbtn')) {
       const n = S.wallet.inv[b.dataset.item] || 0;
       b.querySelector('small').textContent = n;
-      b.disabled = n < 1 || !online;
+      b.disabled = n < 1 || !online || !S.serverItems.includes(b.dataset.item);
     }
   }
 }
@@ -232,16 +238,95 @@ function flyItem(emoji, toNode) {
   ], { duration: 550, easing: 'ease-in' }).onfinish = () => f.remove();
 }
 
-function showFriendHit(hit) {
-  const node = friendEls.get(hit.to);
-  if (!node) return;
+// What a room-wide item throws at each card, when that's not its own emoji.
+const MISSILE = { rain: '🍅' };
+
+// Pops the item over everyone it reached (friends' cards and my own character).
+function showHit(hit) {
   const item = S.items[hit.item];
-  node.classList.remove('shake');
-  void node.offsetWidth;
-  node.classList.add('shake');
-  const sp = el('div', 'fsplat', item?.emoji || '💥');
+  if (!item) return;
+  const nodeOf = (id) => (id === S.me.id ? $('#me') : friendEls.get(id));
+  if (hit.kind === 'party') {
+    for (const node of [$('#me'), ...friendEls.values()]) pop(node, item.emoji, false);
+    return;
+  }
+  for (const id of hit.targets) pop(nodeOf(id), MISSILE[item.id] || item.emoji, true);
+  for (const id of hit.blocked) pop(nodeOf(id), '☂️', false);
+}
+
+function pop(node, emoji, shake) {
+  if (!node) return;
+  if (shake) {
+    node.classList.remove('shake');
+    void node.offsetWidth;
+    node.classList.add('shake');
+  }
+  const sp = el('div', 'fsplat', emoji);
   node.append(sp);
   setTimeout(() => sp.remove(), 2000);
+}
+
+// ---------------------------------------------------------------- my items
+// Room-wide items are used from under my character, with a second click to confirm.
+// Umbrellas only show how many I have; the 🔕 button switches 免打扰 off.
+const myItemEls = new Map(); // item id -> { b, small, item }
+let armed = null; // { id, timer }: the room-wide item waiting for its confirming click
+
+function buildMyItems() {
+  const box = $('#myItems');
+  for (const item of Object.values(S.items)) {
+    if (item.kind === 'throw') continue;
+    const shield = item.kind === 'shield';
+    const b = el(shield ? 'span' : 'button', `mitem hit${shield ? ' shield' : ''}`);
+    const small = el('small');
+    b.append(el('span', null, item.emoji), small);
+    if (!shield) b.addEventListener('click', () => useRoomItem(item));
+    box.append(b);
+    myItemEls.set(item.id, { b, small, item });
+  }
+  const dnd = el('button', 'mitem hit', '🔕');
+  dnd.id = 'myDnd';
+  dnd.title = '免打扰中：被糊只显示在小人身上，不弹全屏\n点一下关闭（托盘菜单里也能开关）';
+  dnd.addEventListener('click', () => api.setDnd(false));
+  box.append(dnd);
+}
+
+function renderMyItems() {
+  const online = S.net === 'online';
+  let any = S.dnd;
+  for (const { b, small, item } of myItemEls.values()) {
+    const n = S.wallet.inv[item.id] || 0;
+    const old = online && !S.serverItems.includes(item.id);
+    any ||= n > 0;
+    b.classList.toggle('hidden', n < 1);
+    b.classList.toggle('off', old);
+    b.classList.toggle('armed', armed?.id === item.id);
+    small.textContent = n;
+    if (item.kind === 'shield') {
+      b.title = old ? '房主或中转服务器版本较旧，雨伞暂时不生效' : `雨伞 ×${n}：自动挡下下一次攻击，每挡一次用掉一把`;
+    } else {
+      b.disabled = !online || old;
+      b.title = !online ? `${item.name}：联机后才能用` : old ? `房主或中转服务器版本较旧，用不了${item.name}` : `${item.name}：${item.desc}（点两下）`;
+    }
+  }
+  $('#myDnd').classList.toggle('hidden', !S.dnd);
+  $('#myItems').classList.toggle('hidden', !any);
+}
+
+async function useRoomItem(item) {
+  clearTimeout(armed?.timer);
+  if (armed?.id !== item.id) {
+    armed = { id: item.id, timer: setTimeout(() => { armed = null; renderMyItems(); }, 3000) };
+    renderMyItems();
+    return toast(`再点一下：${item.name}（${item.desc}）`);
+  }
+  armed = null;
+  renderMyItems();
+  const r = await api.throwItem(item.id, '');
+  if (!r.ok) return toast(r.error);
+  S.wallet = r.wallet;
+  renderWallet();
+  if (item.kind === 'group') for (const node of friendEls.values()) flyItem(MISSILE[item.id] || item.emoji, node);
 }
 
 // ---------------------------------------------------------------- panel
@@ -503,7 +588,9 @@ function buildShop() {
     const row = el('div', 'shop-item');
     const info = el('div', 'info');
     const owned = el('small');
-    info.append(el('b', null, item.name), owned);
+    const name = el('b', null, item.name);
+    if (item.desc) name.append(el('span', 'desc', item.desc));
+    info.append(name, owned);
     row.append(el('div', 'emoji', item.emoji), info);
     const buttons = [1, 5].map((qty) => {
       const b = el('button', null, `换${qty}`);
@@ -524,7 +611,8 @@ function buildShop() {
 
 function renderShop() {
   for (const { item, owned, buttons } of shopRows) {
-    owned.textContent = `${item.cost} 点 · 已有 ${S.wallet.inv[item.id] || 0} 个`;
+    const old = S.net === 'online' && !S.serverItems.includes(item.id);
+    owned.textContent = `${item.cost} 点 · 已有 ${S.wallet.inv[item.id] || 0} 个${old ? ' · 这个房间的服务器版本旧，暂时用不了' : ''}`;
     for (const { b, qty } of buttons) b.disabled = S.wallet.count < item.cost * qty;
   }
 }
@@ -869,7 +957,17 @@ api.on('net-status', (s) => {
   $('#netText').textContent = s.text;
   renderRoom();
   renderFriendButtons();
+  renderMyItems();
+  renderShop();
 });
+api.on('server-items', (list) => {
+  if (!S.me) return;
+  S.serverItems = list;
+  renderFriendButtons();
+  renderMyItems();
+  renderShop();
+});
+api.on('dnd', (on) => { if (S.me) { S.dnd = on; renderMyItems(); } });
 api.on('players', (list) => {
   if (!S.me) return;
   S.players = list;
@@ -884,7 +982,7 @@ api.on('skin', ({ id, rev, skin }) => {
 api.on('update', (u) => { S.update = u; if (S.me) renderUpdate(); });
 api.on('log', log);
 api.on('toast', toast);
-api.on('hit', showFriendHit);
+api.on('hit', (hit) => { if (S.me) showHit(hit); });
 api.on('steam-joined', (d) => {
   if (!S.me) return;
   if (d.joinAddress) $('#joinAddr').value = d.joinAddress;
@@ -895,7 +993,7 @@ api.on('steam-joined', (d) => {
 (async () => {
   const d = await api.init();
   Object.assign(S, {
-    me: d.me, wallet: d.wallet, items: d.items, characters: d.characters, maxPlayers: d.maxPlayers,
+    me: d.me, wallet: d.wallet, items: d.items, serverItems: d.serverItems, dnd: d.dnd, characters: d.characters, maxPlayers: d.maxPlayers,
     players: d.players, skins: d.skins, net: d.net.state, server: d.server, steam: d.steam || d.server?.steam,
     decos: d.decos, decoState: d.decoState, version: d.version, update: d.update,
   });
@@ -908,6 +1006,7 @@ api.on('steam-joined', (d) => {
   $('#hostPwd').value = d.hostPassword;
   preloadFrames();
   buildShop();
+  buildMyItems();
   buildDecos();
   renderDecos();
   renderUpdate();
