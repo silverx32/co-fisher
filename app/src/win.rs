@@ -2,6 +2,7 @@
 
 use windows::core::w;
 use windows::Win32::Foundation::{HWND, POINT};
+use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::UI::Shell::{
     SHQueryUserNotificationState, QUNS_BUSY, QUNS_NOT_PRESENT, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
 };
@@ -14,6 +15,12 @@ use winreg::RegKey;
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: &str = "CoFisher";
+
+/// Today on this computer's clock (local time), as "2026-11-04".
+pub fn today() -> String {
+    let t = unsafe { GetLocalTime() };
+    format!("{:04}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay)
+}
 
 /// Cursor position in physical screen pixels.
 pub fn cursor_pos() -> Option<(i32, i32)> {

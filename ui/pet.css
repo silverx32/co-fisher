@@ -143,7 +143,7 @@ button.mini { padding: 1px 7px; font-size: 11px; border-radius: 6px; }
 .me-stats { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px; margin-top: 2px; position: relative; z-index: 3; }
 #bubble {
   background: #fff; border-radius: 12px; padding: 1px 10px; box-shadow: 0 2px 8px rgba(0,0,0,.2);
-  font-size: 13px; position: relative;
+  font-size: 13px; position: relative; cursor: pointer; /* opens the calendar */
 }
 .chest-bubble {
   position: relative; border-radius: 12px; padding: 1px 8px; font-size: 12px; line-height: 19px; white-space: nowrap;
@@ -209,6 +209,13 @@ button.mitem:not(:disabled):hover { background: #fff3e0; border-color: #ffb347; 
 .worn-row .worn-label { color: #888; width: 34px; }
 .worn-row button, .merge-row button { margin-left: auto; }
 .merge-row small { color: #999; }
+.merge-status { font-size: 11px; color: #666; margin-top: 4px; }
+.merge-chips { display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0 2px; }
+.merge-chip { position: relative; width: 30px; height: 30px; border-radius: 6px; background: #f5f6fa; cursor: pointer; }
+.merge-chip:hover { background: #ffe9e9; }
+.merge-chip img { width: 100%; height: 100%; object-fit: contain; display: block; padding: 2px; }
+.merge-chip small { position: absolute; right: 1px; bottom: 0; font-size: 9px; color: #666; }
+.merge-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 #decoMerge h4 { font-weight: normal; color: #888; font-size: 11px; }
 .slot-tabs { display: flex; gap: 4px; margin: 8px 0 2px; }
 .slot-tabs button { flex: 1; border-radius: 8px; padding: 3px 0; }
@@ -226,7 +233,43 @@ button.mitem:not(:disabled):hover { background: #fff3e0; border-color: #ffb347; 
 .tile.owned:hover { background: #eef2ff; }
 .tile.equipped { border-color: #5b8cff; background: #eef2ff; }
 .tile small { position: absolute; right: 3px; bottom: 1px; font-size: 10px; color: #666; }
+.tile .pick { position: absolute; left: 3px; top: 1px; font-size: 10px; color: #e8742b; }
+.tile.picked { border-color: #f59e0b; background: #fff4e0; }
+.tile.dim { opacity: .35; }
 .tabs button.badge::after { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #ff6b6b; margin-left: 3px; vertical-align: top; }
+
+/* ---------- calendar: presses + clicks per day. l1..l5 are one blue ramp, light -> dark (checked
+   as an ordinal scale on white: monotone, visible steps, the lightest still 2:1); l0 = rest day. */
+.cal-top { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+.cal-top .balance { margin-bottom: 0; }
+.cal-top small { color: #888; font-size: 11px; white-space: nowrap; }
+.cal-line { font-size: 12px; color: #666; }
+.cal-nav { display: flex; align-items: center; gap: 6px; margin: 6px 0 3px; }
+.cal-nav b { font-size: 13px; }
+.cal-nav small { color: #999; font-size: 11px; margin-right: auto; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.cal-wd { text-align: center; font-size: 10px; line-height: 14px; color: #999; }
+/* top row: date, last hits, rating emoji; the count below */
+.cal-day { position: relative; height: 28px; border-radius: 4px; background: #f7f8fb; color: #52514e; cursor: default; }
+.cal-day span, .cal-day small { position: absolute; top: 1px; font-size: 9px; line-height: 11px; }
+.cal-day .d { left: 3px; }
+.cal-day .e { right: 2px; font-size: 10px; }
+.cal-day small { left: 0; right: 0; text-align: center; }
+.cal-day b { position: absolute; left: 0; right: 0; top: 13px; text-align: center; font-size: 11px; line-height: 13px; }
+.cal-day.blank { visibility: hidden; }
+.cal-day.gone { display: none; }
+.cal-day.future { opacity: .45; }
+.cal-day.today { box-shadow: inset 0 0 0 2px #2b2b3a; }
+.l0 { background: #eceef3; color: #52514e; }
+.l1 { background: #86b6ef; color: #0b0b0b; }
+.l2 { background: #5598e7; color: #fff; }
+.l3 { background: #2a78d6; color: #fff; }
+.l4 { background: #1c5cab; color: #fff; }
+.l5 { background: #104281; color: #fff; }
+.cal-legend { display: flex; flex-wrap: wrap; gap: 3px 10px; margin-top: 6px; font-size: 11px; color: #52514e; }
+.cal-key { display: inline-flex; align-items: center; gap: 3px; cursor: default; }
+.cal-key i { width: 10px; height: 10px; border-radius: 3px; }
+.cal-key small { color: #999; }
 #updText { white-space: pre-line; }
 #updNotes { margin-top: 6px; background: #f7f9ff; border-radius: 8px; padding: 4px 8px; font-size: 12px; }
 #updNotesText { white-space: pre-line; color: #555; max-height: 110px; overflow-y: auto; margin-top: 2px; }

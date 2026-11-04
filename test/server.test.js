@@ -315,7 +315,7 @@ test('room boss: typing hurts it, 3% of its HP earns a chest, the next one comes
   await Promise.all([a, b, c].map((x) => x.wait((m) => m.t === 'welcome')));
   // Bug 虫 is 80% tough: 16 HP for each player in the room at once.
   const st = await a.wait((m) => m.t === 'state' && m.boss?.max === 48);
-  assert.deepEqual([st.boss.emoji, st.boss.name, st.boss.hp, st.boss.level, st.boss.in, st.boss.minPct], ['🐛', 'Bug 虫', 48, 1, 0, 3]);
+  assert.deepEqual([st.boss.id, st.boss.emoji, st.boss.name, st.boss.hp, st.boss.level, st.boss.in, st.boss.minPct], ['bug', '🐛', 'Bug 虫', 48, 1, 0, 3]);
 
   a.send({ t: 'status', count: 30, typing: true, inv: {} });
   const hurt = await b.wait((m) => m.t === 'state' && m.boss.hp === 18);
@@ -324,11 +324,11 @@ test('room boss: typing hurts it, 3% of its HP earns a chest, the next one comes
   await b.wait((m) => m.t === 'state' && m.boss.hp === 17);
   b.send({ t: 'status', count: 30, typing: true, inv: {} }); // more than it has left
   const down = await a.wait((m) => m.t === 'bossDown');
-  assert.deepEqual([down.name, down.killer, down.killerName, down.total, down.minPct], ['Bug 虫', id(2), 'B', 48, 3]);
+  assert.deepEqual([down.id, down.name, down.killer, down.killerName, down.total, down.minPct], ['bug', 'Bug 虫', id(2), 'B', 48, 3]);
   assert.deepEqual(down.damage, { [id(1)]: 30, [id(2)]: 17, [id(3)]: 1 });
   assert.deepEqual(down.rewarded.sort(), [id(1), id(2)], 'C dealt under 3%: no chest');
   const wait = await a.wait((m) => m.t === 'state' && m.boss.hp === 0);
-  assert.equal(wait.boss.name, 'Deadline 怪', 'shows the next one while waiting');
+  assert.deepEqual([wait.boss.id, wait.boss.name], ['deadline', 'Deadline 怪'], 'shows the next one while waiting');
   assert.ok(wait.boss.in > 0 && wait.boss.in <= 1000, `in = ${wait.boss.in}`);
   assert.equal(wait.players.find((p) => p.id === id(2)).dmg, 17, 'the last fight stays ranked');
 

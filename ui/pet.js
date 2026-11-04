@@ -28,12 +28,14 @@ const S = {
   steamLoading: false,
   decos: { items: [], rarities: [] }, // catalogue
   decoState: { owned: {}, worn: {}, nextChestAt: 0, stats: [] },
+  daily: {}, // key presses + clicks per day: "2026-11-04" -> count
+  dailyLastHits: {}, // bosses I landed the last hit on, per day
   version: '',
   update: { state: 'idle' },
 };
 
-// Each built-in character has one idle frame and three typing frames. Every key press flashes
-// one random typing frame (never the same one twice in a row), then it's straight back to idle.
+// Each built-in character has one idle frame and three typing frames. Every key press or click
+// flashes one random typing frame (never the same one twice in a row), then it's straight back to idle.
 const TYPING_FRAMES = 3;
 const TAP_MS = 110;
 const frameSrc = (char, frame) => `assets/characters/${char}/${frame ? `typing${frame}` : 'idle'}.png`;
@@ -367,11 +369,13 @@ function renderBoss() {
   tag.classList.toggle('hidden', !up || !!won);
   tag.classList.toggle('low', mine * 100 < b.max * b.minPct);
   tag.textContent = `我 ${pct(mine)}`;
+  const drops = S.decos.items.filter((x) => x.boss && x.boss === b.id).map((x) => `${x.name} ${pctText(x.drop)}`).join(' · ');
   const ranking = S.players.filter((p) => p.dmg > 0).sort((x, y) => y.dmg - x.dmg).slice(0, 5)
     .map((p, k) => `${k + 1}. ${p.name}  ${p.dmg}（${pct(p.dmg)}）`).join('\n');
   box.title = `${up ? `${b.emoji} ${b.name} Lv.${b.level}\n血量 ${b.hp} / ${b.max}\n我的伤害 ${mine}（${pct(mine)}）` : `下一只：${b.emoji} ${b.name} Lv.${b.level}`}` +
     `${ranking ? `\n${up ? '伤害' : '上一只的伤害'}：\n${ranking}` : ''}` +
-    `\n大家敲键盘就是在打它。打败时伤害占 ${b.minPct}% 以上的人每人得一个 Boss 宝箱，补最后一刀的人宝箱稀有度更高`;
+    `\n大家敲键盘、点鼠标就是在打它。打败时伤害占 ${b.minPct}% 以上的人每人得一个 Boss 宝箱，补最后一刀的人宝箱稀有度更高` +
+    `${drops ? `，还会掉一件它的专属装扮：\n${drops}` : ''}`;
 }
 
 function hurtBoss(damage) {
@@ -395,6 +399,7 @@ function switchTab(tab) {
   document.querySelectorAll('.tabs button[data-tab]').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('section[data-pane]').forEach((s) => s.classList.toggle('hidden', s.dataset.pane !== tab));
   if (tab === 'room' && S.net === 'offline' && S.steam?.available) refreshSteamRooms();
+  if (tab === 'cal') showMonth(null);
 }
 
 document.querySelectorAll('.tabs button[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
@@ -673,11 +678,43 @@ function renderShop() {
 }
 
 // ---------------------------------------------------------------- cosmetics
-const decoTiles = new Map(); // id -> { tile, count, d }
-const decoSections = []; // merge row per rarity (none for the top one): { info, merge, confirm, timer }
+const decoTiles = new Map(); // id -> { tile, count, tag, d }
+const mergeRows = []; // per rarity that can be merged: its "共 N 件" label
+const mergeUi = {}; // the merge box's controls (buildMerge)
+// Merging by hand: while picking, clicking an owned tile adds one copy of it instead of wearing
+// it. The first copy picked sets the rarity, the rest must match.
+let picking = null; // { rarity, picks: { id: copies }, confirm, lose, timer }
 const wornRows = new Map(); // slot -> { name, off }
 const slotViews = new Map(); // slot -> { tab, pane, groups: [{ items, info }] }
 let decoSlot = 'head'; // which slot's collection is shown
+
+// A titled grid of tiles (one rarity of a slot, or one boss's own) in `pane`.
+function decoGroup(pane, title, color, items) {
+  const head = el('div', 'deco-head');
+  const name = el('b', null, title);
+  if (color) name.style.color = color;
+  const info = el('small');
+  head.append(name, info);
+  const grid = el('div', 'deco-grid');
+  for (const d of items) {
+    const tile = el('div', 'tile');
+    const img = decoIcon(d);
+    img.loading = 'lazy';
+    const count = el('small');
+    const tag = el('b', 'pick'); // copies picked for a merge
+    tile.append(img, count, tag);
+    // A boss's own come in every rarity: a strip in the rarity's colour tells them apart.
+    if (d.boss) tile.style.boxShadow = `inset 0 -3px 0 ${S.decos.rarities[d.rarity].color}`;
+    tile.addEventListener('click', () => (picking ? pickDeco(d) : toggleWear(d.id)));
+    grid.append(tile);
+    decoTiles.set(d.id, { tile, count, tag, d });
+  }
+  pane.append(head, grid);
+  return { items, info };
+}
+
+const bossOf = (id) => (S.decos.bosses || []).find((b) => b.id === id);
+const pctText = (p) => `${+p.toFixed(1)}%`;
 
 function buildDecos() {
   for (const s of S.decos.slots) {
@@ -689,71 +726,54 @@ function buildDecos() {
     $('#decoWorn').append(row);
     wornRows.set(s.id, { name, off });
   }
-  S.decos.rarities.forEach((r, ri) => {
-    const next = S.decos.rarities[ri + 1];
-    if (!next) return;
-    const row = el('div', 'merge-row');
-    const name = el('b', null, r.name);
-    name.style.color = r.color;
-    const info = el('small');
-    const merge = el('button', 'mini', `合成 → ${next.name}`);
-    merge.addEventListener('click', () => mergeDecos(ri));
-    row.append(name, info, merge);
-    $('#decoMerge').append(row);
-    decoSections[ri] = { info, merge, confirm: false, timer: null };
-  });
-  for (const s of S.decos.slots) {
-    const tab = el('button', null, s.name);
-    tab.addEventListener('click', () => { decoSlot = s.id; renderDecos(); });
+  buildMerge();
+  // One tab + pane per slot, then one for the bosses' own.
+  const addView = (id, label) => {
+    const tab = el('button', null, label);
+    tab.addEventListener('click', () => { decoSlot = id; renderDecos(); });
     $('#decoSlotTabs').append(tab);
-    const pane = el('div');
-    const groups = [];
+    const view = { tab, pane: el('div'), groups: [] };
+    $('#decoList').append(view.pane);
+    slotViews.set(id, view);
+    return view;
+  };
+  for (const s of S.decos.slots) {
+    const { pane, groups } = addView(s.id, s.name);
     S.decos.rarities.forEach((r, ri) => {
-      const items = S.decos.items.filter((x) => x.slot === s.id && x.rarity === ri);
-      if (!items.length) return;
-      const head = el('div', 'deco-head');
-      const name = el('b', null, r.name);
-      name.style.color = r.color;
-      const info = el('small');
-      head.append(name, info);
-      const grid = el('div', 'deco-grid');
-      for (const d of items) {
-        const tile = el('div', 'tile');
-        const img = decoIcon(d);
-        img.loading = 'lazy';
-        const count = el('small');
-        tile.append(img, count);
-        tile.addEventListener('click', () => toggleWear(d.id));
-        grid.append(tile);
-        decoTiles.set(d.id, { tile, count, d });
-      }
-      pane.append(head, grid);
-      groups.push({ items, info });
+      const items = S.decos.items.filter((x) => x.slot === s.id && x.rarity === ri && !x.boss);
+      if (items.length) groups.push(decoGroup(pane, r.name, r.color, items));
     });
-    $('#decoList').append(pane);
-    slotViews.set(s.id, { tab, pane, groups });
+  }
+  if (!S.decos.items.some((x) => x.boss)) return;
+  const { pane, groups } = addView('boss', '⚔️ Boss');
+  for (const b of S.decos.bosses || []) {
+    const items = S.decos.items.filter((x) => x.boss === b.id);
+    if (items.length) groups.push(decoGroup(pane, `${b.emoji} ${b.name}`, null, items));
   }
 }
 
 function renderDecos() {
   const ds = S.decoState;
   const worn = ds.worn || {};
-  for (const [id, { tile, count, d }] of decoTiles) {
+  for (const [id, { tile, count, tag, d }] of decoTiles) {
     const n = ds.owned[id] || 0;
     const on = worn[d.slot] === id;
+    const picked = picking?.picks[id] || 0;
     tile.classList.toggle('owned', n > 0);
     tile.classList.toggle('equipped', on);
-    tile.title = n > 0 ? `${d.name}（${S.decos.rarities[d.rarity].name}）× ${n}${on ? '\n点击卸下' : '\n点击穿上'}` : '？？？';
+    tile.classList.toggle('picked', picked > 0);
+    // While picking, owned ones that can't go into this merge are greyed out.
+    const unfit = picking?.rarity == null ? !S.decos.rarities[d.rarity + 1] : d.rarity !== picking.rarity;
+    tile.classList.toggle('dim', !!picking && n > 0 && unfit);
+    const rarity = S.decos.rarities[d.rarity].name;
+    const boss = bossOf(d.boss);
+    const drop = boss ? `\n${boss.emoji} ${boss.name} 补最后一刀掉落，概率 ${pctText(d.drop)}` : '';
+    const action = picking ? '\n点击挑作合成材料' : on ? '\n点击卸下' : '\n点击穿上';
+    tile.title = n > 0 ? `${d.name}（${rarity}）× ${n}${drop}${action}` : boss ? `？？？（${rarity}）${drop}` : '？？？';
     count.textContent = n > 1 ? `×${n}` : '';
+    tag.textContent = picked ? `✓${picked}` : '';
   }
-  decoSections.forEach((sec, ri) => {
-    const st = ds.stats[ri] || {};
-    sec.info.textContent = `共 ${st.owned || 0} 个`;
-    if (!sec.confirm) {
-      sec.merge.disabled = !st.canMerge;
-      sec.merge.title = st.lose ? `会用掉 ${st.lose} 个只有一件的装扮` : '';
-    }
-  });
+  renderMerge();
   for (const [slot, { name, off }] of wornRows) {
     const d = decoById.get(worn[slot]);
     name.textContent = d ? d.name : '无';
@@ -918,22 +938,116 @@ $('#chestBtn').addEventListener('click', openChest);
 $('#bossChestBtn').addEventListener('click', openBossChest);
 $('#myChest').addEventListener('click', () => (bossChests() ? openBossChest() : openChest()));
 
-async function mergeDecos(rarity) {
-  const sec = decoSections[rarity];
-  const r = await api.mergeDecos(rarity, sec.confirm);
-  clearTimeout(sec.timer);
-  if (r.confirm) {
-    // Using up an item that's the only one of its kind needs a second click.
-    sec.confirm = true;
-    sec.merge.textContent = `会用掉 ${r.lose} 个独有的，再点确认`;
-    sec.timer = setTimeout(() => { sec.confirm = false; sec.merge.textContent = `合成 → ${S.decos.rarities[rarity + 1].name}`; renderDecos(); }, 4000);
-    return;
-  }
-  sec.confirm = false;
-  sec.merge.textContent = `合成 → ${S.decos.rarities[rarity + 1].name}`;
-  if (!r.ok) return toast(r.error);
-  S.decoState = r.decoState;
+function buildMerge() {
+  const box = $('#decoMerge');
+  S.decos.rarities.forEach((r, ri) => {
+    if (!S.decos.rarities[ri + 1]) return;
+    const row = el('div', 'merge-row');
+    const name = el('b', null, r.name);
+    name.style.color = r.color;
+    mergeRows[ri] = el('small');
+    row.append(name, mergeRows[ri]);
+    box.append(row);
+  });
+  const u = Object.assign(mergeUi, {
+    status: el('div', 'merge-status'), chips: el('div', 'merge-chips'), start: el('button', 'mini', '挑材料合成'),
+    fill: el('button', 'mini', '补满'), go: el('button', 'mini primary'), cancel: el('button', 'mini', '取消'),
+  });
+  u.fill.title = '先挑重复的，再挑只有一件的普通装扮（只有一件的 Boss 专属要自己点）';
+  u.start.addEventListener('click', () => { picking = { rarity: null, picks: {}, confirm: false }; renderDecos(); });
+  u.fill.addEventListener('click', fillPicks);
+  u.go.addEventListener('click', mergePicked);
+  u.cancel.addEventListener('click', stopPicking);
+  const bar = el('div', 'merge-bar');
+  bar.append(u.start, u.fill, u.go, u.cancel);
+  box.append(u.status, u.chips, bar);
+}
+
+const pickedCount = () => Object.values(picking?.picks || {}).reduce((a, b) => a + b, 0);
+
+function renderMerge() {
+  const stats = S.decoState.stats || [];
+  mergeRows.forEach((info, ri) => { info.textContent = `共 ${stats[ri]?.owned || 0} 件`; });
+  const u = mergeUi;
+  const r = S.decos.rarities;
+  const n = pickedCount();
+  u.start.classList.toggle('hidden', !!picking);
+  for (const e of [u.status, u.chips, u.fill, u.go, u.cancel]) e.classList.toggle('hidden', !picking);
+  if (!picking) return;
+  u.status.textContent = picking.rarity === null ? '点下面已拥有的装扮挑材料，第一件决定合成哪种稀有度'
+    : `已挑 ${n}/${S.decos.mergeCount} 件${r[picking.rarity].name}（点上面的图标退回）`;
+  u.chips.replaceChildren(...Object.entries(picking.picks).map(([id, k]) => {
+    const d = decoById.get(id);
+    const chip = el('span', 'merge-chip');
+    chip.title = `${d.name}${k > 1 ? ` ×${k}` : ''}\n点一下退回一件`;
+    chip.append(decoIcon(d), el('small', null, k > 1 ? `×${k}` : ''));
+    chip.addEventListener('click', () => unpick(id));
+    return chip;
+  }));
+  u.fill.disabled = picking.rarity === null || n >= S.decos.mergeCount;
+  u.go.disabled = n !== S.decos.mergeCount;
+  u.go.textContent = picking.confirm ? `会用掉 ${picking.lose} 件只有一件的，再点确认` : picking.rarity === null ? '合成' : `合成 → ${r[picking.rarity + 1].name}`;
+}
+
+function pickDeco(d) {
+  const r = S.decos.rarities;
+  const owned = S.decoState.owned[d.id] || 0;
+  if (!owned) return;
+  if (picking.rarity === null && !r[d.rarity + 1]) return toast(`${r[d.rarity].name}是最高稀有度，不能再合成了`);
+  if (picking.rarity !== null && d.rarity !== picking.rarity) return toast(`这次合成的是${r[picking.rarity].name}，只能挑${r[picking.rarity].name}的`);
+  const have = picking.picks[d.id] || 0;
+  const worn = Object.values(S.decoState.worn || {}).includes(d.id);
+  if (have >= owned - (worn ? 1 : 0)) return toast(worn ? '正在穿的要留一件' : '这件已经全挑上了');
+  if (pickedCount() >= S.decos.mergeCount) return toast(`已经挑够 ${S.decos.mergeCount} 件了`);
+  picking.rarity = d.rarity;
+  picking.picks[d.id] = have + 1;
+  picking.confirm = false;
   renderDecos();
+}
+
+function unpick(id) {
+  if (!picking?.picks[id]) return;
+  if (--picking.picks[id] === 0) delete picking.picks[id];
+  if (!pickedCount()) picking.rarity = null;
+  picking.confirm = false;
+  renderDecos();
+}
+
+function stopPicking() {
+  clearTimeout(picking?.timer);
+  picking = null;
+  renderDecos();
+}
+
+async function fillPicks() {
+  if (picking?.rarity == null) return;
+  const r = await api.fillMerge(picking.rarity, picking.picks);
+  if (!picking) return;
+  picking.picks = r.picks;
+  picking.confirm = false;
+  renderDecos();
+  const short = S.decos.mergeCount - pickedCount();
+  if (short > 0) toast(`还差 ${short} 件，能自动挑的都挑上了（只有一件的 Boss 专属要自己点）`);
+}
+
+async function mergePicked() {
+  if (!picking) return;
+  const r = await api.mergeDecos(picking.picks, picking.confirm);
+  if (!picking) return;
+  clearTimeout(picking.timer);
+  if (r.confirm) {
+    // Using up the last copy of something needs a second click.
+    const timer = setTimeout(() => { if (picking) { picking.confirm = false; renderDecos(); } }, 4000);
+    Object.assign(picking, { confirm: true, lose: r.lose, timer });
+    return renderDecos();
+  }
+  if (!r.ok) {
+    picking.confirm = false;
+    renderDecos();
+    return toast(r.error);
+  }
+  S.decoState = r.decoState;
+  stopPicking();
   revealDeco(r.item, r.isNew, '合成得到了');
 }
 
@@ -951,6 +1065,110 @@ function toggleWear(id) {
   if (!d || !S.decoState.owned[id]) return;
   wear(d.slot, S.decoState.worn?.[d.slot] === id ? '' : id);
 }
+
+// ---------------------------------------------------------------- calendar
+// Key presses + mouse clicks per day (S.daily: "2026-11-04" -> count) and the bosses I landed
+// the last hit on (S.dailyLastHits). Each day gets a rating by how busy it was; its colour is
+// l0..l5 in pet.css.
+const DAY_LEVELS = [
+  { min: 0, emoji: '😴', name: '休息', text: '没怎么碰电脑，好好休息' },
+  { min: 1, emoji: '🐟', name: '摸鱼', text: '今天主打一个摸鱼' },
+  { min: 3000, emoji: '🧱', name: '搬砖', text: '正常搬砖，稳稳当当' },
+  { min: 10000, emoji: '💪', name: '勤奋', text: '很努力的一天，给自己加个鸡腿' },
+  { min: 20000, emoji: '🔥', name: '爆肝', text: '键盘都要冒烟了，记得喝水' },
+  { min: 40000, emoji: '👑', name: '卷王', text: '卷王本王，同事瑟瑟发抖' },
+];
+const levelOf = (n) => DAY_LEVELS.findLastIndex((l) => n >= l.min);
+const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']; // weeks start on Monday
+const pad2 = (n) => String(n).padStart(2, '0');
+const dayKey = (t) => `${t.getFullYear()}-${pad2(t.getMonth() + 1)}-${pad2(t.getDate())}`;
+// 9999 / 1.2万 / 123万: short enough for a calendar cell. Rounded down, so 19999 isn't 2万 (the next rating).
+const shortCount = (n) => (n < 1e4 ? String(n) : n < 1e6 ? `${Math.floor(n / 1e3) / 10}万` : `${Math.floor(n / 1e4)}万`);
+// Only touch the DOM when something changed: the calendar re-renders on every key press.
+const setText = (e, s) => { if (e.textContent !== s) e.textContent = s; };
+const setClass = (e, c) => { if (e.className !== c) e.className = c; };
+
+const calCells = []; // six weeks of { box, day, emoji, count, hits }
+let calMonth = null; // first day of the month shown; null = this month
+
+function buildCalendar() {
+  const grid = $('#calGrid');
+  for (const w of WEEKDAYS) grid.append(el('div', 'cal-wd', w));
+  for (let k = 0; k < 42; k++) {
+    const c = { box: el('div'), day: el('span', 'd'), emoji: el('span', 'e'), count: el('b'), hits: el('small') };
+    c.box.append(c.day, c.emoji, c.count, c.hits);
+    grid.append(c.box);
+    calCells.push(c);
+  }
+  DAY_LEVELS.forEach((l, i) => {
+    const key = el('span', 'cal-key');
+    key.title = l.text;
+    key.append(el('i', `l${i}`), `${l.emoji} ${l.name}`, el('small', null, l.min ? `${shortCount(l.min)}+` : '0'));
+    $('#calLegend').append(key);
+  });
+  $('#calPrev').addEventListener('click', () => showMonth(-1));
+  $('#calNext').addEventListener('click', () => showMonth(1));
+}
+
+// `step` months from the one shown; null: back to this month.
+function showMonth(step) {
+  const m = step === null ? new Date() : calMonth || new Date();
+  calMonth = new Date(m.getFullYear(), m.getMonth() + (step || 0), 1);
+  renderCalendar();
+}
+
+function renderCalendar() {
+  const now = new Date();
+  const today = dayKey(now);
+  const first = calMonth || new Date(now.getFullYear(), now.getMonth(), 1);
+  const [y, m] = [first.getFullYear(), first.getMonth()];
+  const lead = (first.getDay() + 6) % 7;
+  const weeks = Math.ceil((lead + new Date(y, m + 1, 0).getDate()) / 7);
+  // From the first day on record, a past day without a count was a rest day; before it there's nothing to say.
+  const since = Object.keys(S.daily).sort()[0] || today;
+  let sum = 0;
+  let hitSum = 0;
+  calCells.forEach((c, k) => {
+    const date = new Date(y, m, k - lead + 1);
+    const key = dayKey(date);
+    const inMonth = date.getMonth() === m;
+    const n = inMonth ? S.daily[key] || 0 : 0;
+    const hits = inMonth ? S.dailyLastHits[key] || 0 : 0;
+    const lv = inMonth && key >= since && (key < today || (key === today && n > 0)) ? levelOf(n) : -1;
+    const l = DAY_LEVELS[lv];
+    sum += n;
+    hitSum += hits;
+    setClass(c.box, `cal-day${k >= weeks * 7 ? ' gone' : inMonth ? '' : ' blank'}${l ? ` l${lv}` : ''}${key === today ? ' today' : key > today ? ' future' : ''}`);
+    setText(c.day, inMonth ? String(date.getDate()) : '');
+    setText(c.emoji, l ? l.emoji : '');
+    setText(c.count, n ? shortCount(n) : '');
+    setText(c.hits, hits ? `⚔${hits}` : '');
+    const what = l ? `${n.toLocaleString()} 次 · ${l.emoji} ${l.name}\n${l.text}` : n ? `${n.toLocaleString()} 次` : key > today ? '还没到' : key === today ? '今天还没开工' : '没有记录';
+    c.box.title = inMonth ? `${m + 1}月${date.getDate()}日 周${WEEKDAYS[(date.getDay() + 6) % 7]}\n${what}${hits ? `\n⚔️ Boss 最后一击 ${hits} 次` : ''}` : '';
+  });
+  setText($('#calMonth'), `${y} 年 ${m + 1} 月`);
+  setText($('#calSum'), `共 ${sum.toLocaleString()} 次${hitSum ? ` · ⚔️ ${hitSum}` : ''}`);
+  $('#calPrev').disabled = dayKey(first) <= `${since.slice(0, 8)}01`;
+  $('#calNext').disabled = y * 12 + m >= now.getFullYear() * 12 + now.getMonth();
+}
+
+// Today's count and rating (top of the calendar, and on the count bubble under my character);
+// the calendar itself only while it's on screen.
+function renderDays() {
+  const today = dayKey(new Date());
+  const n = S.daily[today] || 0;
+  const l = DAY_LEVELS[levelOf(n)];
+  const hits = S.dailyLastHits[today] || 0;
+  const allHits = Object.values(S.dailyLastHits).reduce((a, b) => a + b, 0);
+  setText($('#calToday'), n.toLocaleString());
+  setText($('#calLevel'), n ? `${l.emoji} ${l.name} · ${l.text}` : '☕ 今天还没开工');
+  setText($('#calHits'), `⚔️ Boss 最后一击：今天 ${hits} · 共 ${allHits}`);
+  $('#bubble').title = `今日累计 ${n.toLocaleString()} 次${n ? `（${l.emoji} ${l.name}）` : ''}\n点一下看日历`;
+  const shown = !$('#panel').classList.contains('hidden') && !$('section[data-pane="cal"]').classList.contains('hidden');
+  if (shown) renderCalendar();
+}
+
+$('#bubble').addEventListener('click', () => openPanel('cal'));
 
 // ---------------------------------------------------------------- updates
 function renderUpdate() {
@@ -1054,10 +1272,12 @@ window.addEventListener('mouseup', () => {
 api.on('local', (d) => {
   if (!S.me) return;
   S.typing = d.typing;
-  if (d.total > S.wallet.total) myTap.tap(); // new key presses (total only ever grows)
+  if (d.total > S.wallet.total) myTap.tap(); // new key presses / clicks (total only ever grows)
   S.wallet = { count: d.count, total: d.total, inv: d.inv };
+  if (d.daily) Object.assign(S.daily, d.daily);
   renderMe();
   renderWallet();
+  renderDays();
 });
 api.on('wallet', (w) => { if (S.me) { S.wallet = w; renderWallet(); } });
 api.on('net-status', (s) => {
@@ -1080,6 +1300,9 @@ api.on('boss-down', (d) => {
   if (!S.me) return;
   bossDown = { until: Date.now() + 2500, killerName: d.killerName };
   renderBoss();
+  if (d.dailyLastHits) Object.assign(S.dailyLastHits, d.dailyLastHits);
+  renderDays();
+  if (d.loot) revealDeco(d.loot.id, d.loot.isNew, '补最后一刀掉落了 Boss 专属装扮');
 });
 // Boss chests won (the reply to opening one carries the state too).
 api.on('deco-state', (d) => { if (S.me) { S.decoState = d; renderDecos(); renderChest(); } });
@@ -1119,6 +1342,7 @@ api.on('steam-joined', (d) => {
     me: d.me, wallet: d.wallet, items: d.items, serverItems: d.serverItems, dnd: d.dnd, characters: d.characters, maxPlayers: d.maxPlayers,
     players: d.players, skins: d.skins, net: d.net.state, server: d.server, steam: d.steam || d.server?.steam,
     decos: d.decos, decoState: d.decoState, version: d.version, update: d.update, boss: d.boss, bossAt: Date.now() + (d.boss?.in || 0),
+    daily: d.daily || {}, dailyLastHits: d.dailyLastHits || {},
   });
   for (const x of d.decos.items) decoById.set(x.id, x);
   $('#nameInput').value = d.me.name;
@@ -1131,9 +1355,10 @@ api.on('steam-joined', (d) => {
   buildShop();
   buildMyItems();
   buildDecos();
+  buildCalendar();
   renderDecos();
   renderUpdate();
-  setInterval(() => { renderChest(); renderBoss(); }, 1000); // countdowns
+  setInterval(() => { renderChest(); renderBoss(); renderDays(); }, 1000); // countdowns, a new day at midnight
   renderMe();
   renderWallet();
   renderChars();

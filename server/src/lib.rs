@@ -56,16 +56,33 @@ pub const BOSS_HP_PER_PLAYER: u64 = 1500;
 pub const BOSS_COOLDOWN: Duration = Duration::from_secs(20 * 60);
 /// Share of the boss's HP (%) a player must have dealt to get a chest when it's beaten.
 pub const BOSS_MIN_SHARE: u64 = 3;
-/// (emoji, name, toughness in %), fought in turn.
-const BOSSES: [(&str, &str, u64); 8] = [
-    ("🐛", "Bug 虫", 80),
-    ("⏰", "Deadline 怪", 100),
-    ("📧", "邮件海怪", 100),
-    ("📊", "周报巨魔", 110),
-    ("🤖", "会议机器人", 100),
-    ("🧟", "加班僵尸", 120),
-    ("🐲", "需求变更龙", 130),
-    ("👔", "老板的凝视", 150),
+/// A kind of room boss. Clients know it by `id` (its exclusive cosmetics carry it); `toughness`
+/// scales its HP, in %.
+pub struct BossKind {
+    pub id: &'static str,
+    pub emoji: &'static str,
+    pub name: &'static str,
+    pub toughness: u64,
+}
+
+/// Fought in turn, getting tougher. v2.4 servers had only eight of these and sent no ids.
+pub const BOSSES: [BossKind; 16] = [
+    BossKind { id: "bug", emoji: "🐛", name: "Bug 虫", toughness: 80 },
+    BossKind { id: "deadline", emoji: "⏰", name: "Deadline 怪", toughness: 100 },
+    BossKind { id: "printer", emoji: "🖨️", name: "卡纸打印机", toughness: 90 },
+    BossKind { id: "email", emoji: "📧", name: "邮件海怪", toughness: 100 },
+    BossKind { id: "call", emoji: "📞", name: "夺命连环 Call", toughness: 100 },
+    BossKind { id: "report", emoji: "📊", name: "周报巨魔", toughness: 110 },
+    BossKind { id: "expense", emoji: "🧾", name: "报销单妖", toughness: 100 },
+    BossKind { id: "meeting", emoji: "🤖", name: "会议机器人", toughness: 100 },
+    BossKind { id: "ghost", emoji: "👻", name: "已读不回幽灵", toughness: 110 },
+    BossKind { id: "pie", emoji: "🥧", name: "画饼大师", toughness: 110 },
+    BossKind { id: "overtime", emoji: "🧟", name: "加班僵尸", toughness: 120 },
+    BossKind { id: "legacy", emoji: "🦖", name: "祖传代码恐龙", toughness: 120 },
+    BossKind { id: "change", emoji: "🐲", name: "需求变更龙", toughness: 130 },
+    BossKind { id: "incident", emoji: "🔥", name: "线上事故", toughness: 140 },
+    BossKind { id: "glare", emoji: "👔", name: "老板的凝视", toughness: 150 },
+    BossKind { id: "demon", emoji: "👹", name: "996 魔王", toughness: 160 },
 ];
 const BROADCAST_INTERVAL: Duration = Duration::from_millis(100);
 const HEARTBEAT: Duration = Duration::from_secs(10);
@@ -215,13 +232,13 @@ struct Boss {
 }
 
 impl Boss {
-    fn kind(&self) -> (&'static str, &'static str, u64) {
-        BOSSES[(self.beaten % BOSSES.len() as u64) as usize]
+    fn kind(&self) -> &'static BossKind {
+        &BOSSES[(self.beaten % BOSSES.len() as u64) as usize]
     }
 
     /// HP for each player in the fight.
     fn share(&self, hp_per_player: u64) -> u64 {
-        (hp_per_player.saturating_mul(self.kind().2) / 100).max(1)
+        (hp_per_player.saturating_mul(self.kind().toughness) / 100).max(1)
     }
 
     fn spawn(&mut self, players: usize, hp_per_player: u64) {
@@ -245,10 +262,13 @@ impl Boss {
     }
 
     fn json(&self, now: Instant) -> Value {
-        let (emoji, name, _) = self.kind();
-        // "in": ms until the next one appears; while none is up, emoji / name / level are the next one's.
+        let k = self.kind();
+        // "in": ms until the next one appears; while none is up, id / emoji / name / level are the next one's.
         let wait = if self.hp > 0 { 0 } else { self.next_at.map_or(0, |t| t.saturating_duration_since(now).as_millis() as u64) };
-        json!({ "emoji": emoji, "name": name, "level": self.beaten + 1, "hp": self.hp, "max": self.max_hp, "in": wait, "minPct": BOSS_MIN_SHARE })
+        json!({
+            "id": k.id, "emoji": k.emoji, "name": k.name, "level": self.beaten + 1,
+            "hp": self.hp, "max": self.max_hp, "in": wait, "minPct": BOSS_MIN_SHARE,
+        })
     }
 }
 
@@ -353,17 +373,17 @@ impl Room {
         if b.hp > 0 {
             return None;
         }
-        let (emoji, name, _) = b.kind();
+        let k = b.kind();
         b.beaten += 1;
         b.next_at = Some(now + cooldown);
         let killer_name = self.players.get(id).map_or("", |p| p.name.as_str());
         // A chest for everyone here who dealt at least BOSS_MIN_SHARE % of its HP. Clients roll
-        // it themselves (the last hit's is luckier).
+        // it themselves (the last hit's is luckier, and drops one of the boss's own cosmetics).
         let damage: Map<String, Value> = self.players.keys().map(|p| (p.clone(), b.damage.get(p).copied().unwrap_or(0).into())).collect();
         let earned = |d: u64| d.saturating_mul(100) >= b.max_hp.saturating_mul(BOSS_MIN_SHARE);
         let rewarded: Vec<&String> = damage.iter().filter(|(_, d)| earned(d.as_u64().unwrap_or(0))).map(|(p, _)| p).collect();
         Some(json!({
-            "t": "bossDown", "emoji": emoji, "name": name, "killer": id, "killerName": killer_name,
+            "t": "bossDown", "id": k.id, "emoji": k.emoji, "name": k.name, "killer": id, "killerName": killer_name,
             "rewarded": rewarded, "damage": damage, "total": b.max_hp, "minPct": BOSS_MIN_SHARE,
         }))
     }
@@ -961,5 +981,16 @@ mod tests {
         b.hp = 0; // beaten: joining doesn't revive it
         b.crowd(5, 100);
         assert_eq!((b.hp, b.max_hp), (0, 320));
+    }
+
+    #[test]
+    fn bosses_have_unique_ids_and_the_v2_4_ones_keep_their_names() {
+        let ids: std::collections::HashSet<&str> = BOSSES.iter().map(|k| k.id).collect();
+        assert_eq!(ids.len(), BOSSES.len());
+        assert!(BOSSES.iter().all(|k| !k.id.is_empty() && k.id.bytes().all(|c| c.is_ascii_lowercase()) && k.toughness > 0));
+        // Clients map v2.4 servers' boss names (sent without ids) to these.
+        for name in ["Bug 虫", "Deadline 怪", "邮件海怪", "周报巨魔", "会议机器人", "加班僵尸", "需求变更龙", "老板的凝视"] {
+            assert!(BOSSES.iter().any(|k| k.name == name), "{name}");
+        }
     }
 }

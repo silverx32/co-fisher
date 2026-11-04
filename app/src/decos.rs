@@ -1,11 +1,14 @@
 //! Cosmetics ("装扮"): a PNG worn on top of (or behind) any character, one per slot (头饰 /
 //! 宠物 / 特效). Obtained from a chest
-//! (costs points, once per cooldown) and by merging 10 of one rarity into one of the next.
+//! (costs points, once per cooldown) and by merging 10 of one rarity, picked by hand, into one
+//! of the next. Each room boss also has cosmetics of its own, dropped only by its last hit
+//! (they can go into a merge, but never come out of one).
 //! The catalogue is generated together with the art by tools/gen-decos.js.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
+use cofisher_server::BOSSES;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -40,6 +43,9 @@ pub const RARITIES: [Rarity; 5] = [
 ];
 /// Odds for the chest of whoever lands a boss's last hit: a bit better than RARITIES' (in 1/1000).
 pub const LUCKY_WEIGHTS: [u32; 5] = [540, 290, 120, 40, 10];
+/// Odds by rarity of the boss's own cosmetic that its last hit also drops (in 1/1000; rarities
+/// a boss has none of are left out).
+pub const BOSS_DROP_WEIGHTS: [u32; 5] = [450, 300, 160, 70, 20];
 
 /// Share of chests (in %) that hold an item bundle instead of a cosmetic.
 pub const ITEM_CHANCE: u32 = 25;
@@ -72,6 +78,9 @@ pub struct Deco {
     /// Square crop around the art in image pixels [x0, y0, x1, y1], for icons.
     #[serde(rename = "box", default)]
     pub icon_box: Vec<u32>,
+    /// The boss whose last hit drops it; never from chests or merges. Empty for the others.
+    #[serde(default)]
+    pub boss: String,
 }
 
 pub fn all() -> &'static [Deco] {
@@ -87,9 +96,18 @@ pub fn get(id: &str) -> Option<&'static Deco> {
 }
 
 pub fn catalogue() -> Value {
+    let items = all().iter().map(|d| {
+        let mut v = json!({ "id": d.id, "name": d.name, "rarity": d.rarity, "slot": d.slot, "layer": d.layer, "box": d.icon_box });
+        if !d.boss.is_empty() {
+            v["boss"] = d.boss.clone().into();
+            v["drop"] = drop_pct(d).into();
+        }
+        v
+    });
     json!({
-        "items": all().iter().map(|d| json!({ "id": d.id, "name": d.name, "rarity": d.rarity, "slot": d.slot, "layer": d.layer, "box": d.icon_box })).collect::<Vec<_>>(),
+        "items": items.collect::<Vec<_>>(),
         "slots": SLOTS.iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
+        "bosses": BOSSES.iter().map(|b| json!({ "id": b.id, "emoji": b.emoji, "name": b.name })).collect::<Vec<_>>(),
         "rarities": RARITIES
             .iter()
             .zip(LUCKY_WEIGHTS)
@@ -110,8 +128,9 @@ fn rand_below(n: u32) -> u32 {
     u32::from_le_bytes(b) % n
 }
 
+/// A chest's or merge's cosmetic of `rarity` (bosses' own aren't among them).
 fn pick_in(rarity: usize) -> &'static Deco {
-    let pool: Vec<&Deco> = all().iter().filter(|d| d.rarity == rarity).collect();
+    let pool: Vec<&Deco> = all().iter().filter(|d| d.rarity == rarity && d.boss.is_empty()).collect();
     pool[rand_below(pool.len() as u32) as usize]
 }
 
@@ -136,87 +155,131 @@ pub fn roll_chest(lucky: bool) -> Prize {
     Prize::Deco(pick_in(rarity))
 }
 
+/// A boss's own cosmetics, and the odds of each rarity among them (0 where it has none).
+fn boss_pool(boss: &str) -> (Vec<&'static Deco>, [u32; 5]) {
+    let pool: Vec<&Deco> = all().iter().filter(|d| !d.boss.is_empty() && d.boss == boss).collect();
+    let weights = std::array::from_fn(|r| if pool.iter().any(|d| d.rarity == r) { BOSS_DROP_WEIGHTS[r] } else { 0 });
+    (pool, weights)
+}
+
+/// What the last hit on `boss` drops: a rarity first, then one of its cosmetics of that rarity.
+/// `None` for a boss without any (e.g. one only a newer server has).
+pub fn roll_boss_drop(boss: &str) -> Option<&'static Deco> {
+    let (pool, weights) = boss_pool(boss);
+    if pool.is_empty() {
+        return None;
+    }
+    let rarity = roll_rarity(&weights);
+    let of: Vec<&Deco> = pool.into_iter().filter(|d| d.rarity == rarity).collect();
+    Some(of[rand_below(of.len() as u32) as usize])
+}
+
+/// Chance (in %) that its boss's last hit drops `d`.
+fn drop_pct(d: &Deco) -> f64 {
+    let (pool, weights) = boss_pool(&d.boss);
+    let same = pool.iter().filter(|x| x.rarity == d.rarity).count().max(1);
+    weights[d.rarity] as f64 * 100.0 / weights.iter().sum::<u32>().max(1) as f64 / same as f64
+}
+
 pub type Owned = BTreeMap<String, u64>;
+/// Copies picked for a merge: id -> how many.
+pub type Picks = BTreeMap<String, u64>;
 
-/// Which copies a merge of `rarity` would use: spare duplicates first (most-owned first), then
-/// single copies; the last copy of anything being worn is never used. `None` if there aren't
-/// enough. The second value is how many distinct items would disappear from the collection.
-pub fn merge_plan(owned: &Owned, rarity: usize, worn: &[String]) -> Option<(Vec<(String, u64)>, u64)> {
-    let mut items: Vec<(&String, u64)> = owned
-        .iter()
-        .filter(|(id, n)| **n > 0 && get(id).is_some_and(|d| d.rarity == rarity))
-        .map(|(id, n)| (id, *n))
-        .collect();
-    items.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-    let mut take: BTreeMap<String, u64> = BTreeMap::new();
-    let mut need = MERGE_COUNT;
-    for (id, n) in &items {
-        let spare = (n - 1).min(need);
-        if spare > 0 {
-            take.insert((*id).clone(), spare);
-            need -= spare;
-        }
-    }
+/// Copies of `id` a merge may use: all of them, except the last one of something worn.
+fn usable(owned: &Owned, id: &str, worn: &[String]) -> u64 {
+    let n = owned.get(id).copied().unwrap_or(0);
+    if worn.iter().any(|w| w == id) { n.saturating_sub(1) } else { n }
+}
+
+/// Checks a merge the player picked: MERGE_COUNT usable copies, all of one rarity below the top
+/// (bosses' own count like any other). Returns that rarity and how many cosmetics would be gone
+/// from the collection afterwards.
+pub fn check_picks(owned: &Owned, picks: &Picks, worn: &[String]) -> Result<(usize, u64), String> {
+    let mut rarity = None;
     let mut lost = 0;
-    for (id, _) in items.iter().rev() {
-        if need == 0 {
-            break;
+    for (id, n) in picks {
+        let d = get(id).ok_or("没有这个装扮")?;
+        if *rarity.get_or_insert(d.rarity) != d.rarity {
+            return Err("只能用同一种稀有度的装扮合成".into());
         }
-        if worn.contains(id) {
-            continue;
+        if *n == 0 || *n > usable(owned, id, worn) {
+            return Err(format!("{}不够了（正在穿的要留一件）", d.name));
         }
-        *take.entry((*id).clone()).or_default() += 1;
-        need -= 1;
-        lost += 1;
+        if owned.get(id) == Some(n) {
+            lost += 1;
+        }
     }
-    (need == 0).then(|| (take.into_iter().collect(), lost))
+    if picks.values().sum::<u64>() != MERGE_COUNT {
+        return Err(format!("要选 {MERGE_COUNT} 件"));
+    }
+    match rarity {
+        Some(r) if r + 1 < RARITIES.len() => Ok((r, lost)),
+        _ => Err("最高稀有度不能再合成了".into()),
+    }
 }
 
-/// Per rarity: { owned (copies), kinds (distinct), total (in catalogue), canMerge, lose }.
-pub fn stats(owned: &Owned, worn: &[String]) -> Value {
-    (0..RARITIES.len())
-        .map(|r| {
-            let mine = owned.iter().filter(|(id, n)| **n > 0 && get(id).is_some_and(|d| d.rarity == r));
-            let (copies, kinds) = mine.fold((0, 0), |(c, k), (_, n)| (c + n, k + 1));
-            let plan = (r + 1 < RARITIES.len()).then(|| merge_plan(owned, r, worn)).flatten();
-            json!({
-                "owned": copies,
-                "kinds": kinds,
-                "total": all().iter().filter(|d| d.rarity == r).count(),
-                "canMerge": plan.is_some(),
-                "lose": plan.map_or(0, |p| p.1),
-            })
-        })
-        .collect()
-}
-
-/// Uses up the copies from `merge_plan` and returns the new item.
-pub fn merge(owned: &mut Owned, rarity: usize, worn: &[String]) -> Option<&'static Deco> {
-    let (take, _) = merge_plan(owned, rarity, worn)?;
-    for (id, n) in take {
-        if let Some(c) = owned.get_mut(&id) {
+/// Uses up the picked copies (see `check_picks`) and returns the new cosmetic: a random one of
+/// the next rarity from the chests' pool (a boss's own only ever drop from its last hit).
+pub fn merge(owned: &mut Owned, picks: &Picks, worn: &[String]) -> Result<&'static Deco, String> {
+    let (rarity, _) = check_picks(owned, picks, worn)?;
+    for (id, n) in picks {
+        if let Some(c) = owned.get_mut(id) {
             *c -= n;
             if *c == 0 {
-                owned.remove(&id);
+                owned.remove(id);
             }
         }
     }
     let got = pick_in(rarity + 1);
     *owned.entry(got.id.clone()).or_default() += 1;
-    Some(got)
+    Ok(got)
+}
+
+/// Tops a merge of `rarity` up to MERGE_COUNT copies (the 补满 button): spare duplicates first
+/// (chest cosmetics before bosses' own, most copies first), then the last copies of chest
+/// cosmetics, least-owned first. A boss's own last copy only goes in when picked by hand. Stops
+/// short when there aren't enough.
+pub fn fill_picks(owned: &Owned, rarity: usize, worn: &[String], picks: &mut Picks) {
+    let mut items: Vec<(&String, &Deco, u64)> =
+        owned.iter().filter_map(|(id, n)| get(id).filter(|d| d.rarity == rarity).map(|d| (id, d, *n))).collect();
+    items.sort_by_key(|(id, d, n)| (!d.boss.is_empty(), std::cmp::Reverse(*n), *id));
+    let spares = items.iter().map(|(id, _, n)| (*id, n.saturating_sub(1)));
+    let last_copies = items.iter().rev().filter(|(_, d, _)| d.boss.is_empty()).map(|(id, _, _)| (*id, usable(owned, id, worn)));
+    let mut need = MERGE_COUNT.saturating_sub(picks.values().sum());
+    for (id, limit) in spares.chain(last_copies) {
+        let add = limit.saturating_sub(picks.get(id).copied().unwrap_or(0)).min(need);
+        if add > 0 {
+            *picks.entry(id.clone()).or_default() += add;
+            need -= add;
+        }
+    }
+}
+
+/// Per rarity: { owned (copies), usable (copies a merge may use) }.
+pub fn stats(owned: &Owned, worn: &[String]) -> Value {
+    (0..RARITIES.len())
+        .map(|r| {
+            let mine: Vec<&String> = owned.keys().filter(|id| get(id).is_some_and(|d| d.rarity == r)).collect();
+            json!({
+                "owned": mine.iter().map(|id| owned[*id]).sum::<u64>(),
+                "usable": mine.iter().map(|id| usable(owned, id, worn)).sum::<u64>(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Chest / merge cosmetics of rarity `r`.
     fn ids(r: usize) -> Vec<String> {
-        all().iter().filter(|d| d.rarity == r).map(|d| d.id.clone()).collect()
+        all().iter().filter(|d| d.rarity == r && d.boss.is_empty()).map(|d| d.id.clone()).collect()
     }
 
     #[test]
     fn catalogue_is_complete() {
-        assert_eq!(all().len(), 140);
+        assert_eq!(all().iter().filter(|d| d.boss.is_empty()).count(), 140);
         for (slot, _) in SLOTS {
             assert!(all().iter().any(|d| d.slot == slot), "slot {slot} has items");
         }
@@ -227,39 +290,54 @@ mod tests {
         assert_eq!(RARITIES.iter().map(|r| r.weight).sum::<u32>(), 1000);
     }
 
-    #[test]
-    fn merge_uses_duplicates_first_and_keeps_equipped() {
-        let c = ids(0);
-        let mut owned = Owned::new();
-        owned.insert(c[0].clone(), 6);
-        owned.insert(c[1].clone(), 3);
-        owned.insert(c[2].clone(), 1);
-        let worn = vec![c[2].clone(), "some-pet".to_string()];
-        // 10 copies, but the worn c[2] is off limits.
-        assert!(merge_plan(&owned, 0, &worn).is_none());
-        owned.insert(c[4].clone(), 2);
-        // 8 spare duplicates, then the last copies of the least-owned items (c[4], c[1]).
-        let (plan, lost) = merge_plan(&owned, 0, &worn).unwrap();
-        assert_eq!(plan.iter().map(|p| p.1).sum::<u64>(), MERGE_COUNT);
-        assert_eq!(lost, 2);
-        assert!(!plan.iter().any(|p| p.0 == c[2]));
-
-        let got = merge(&mut owned, 0, &worn).unwrap();
-        assert_eq!(got.rarity, 1);
-        assert_eq!(owned.get(&c[0]), Some(&1));
-        assert_eq!(owned.get(&c[2]), Some(&1));
-        assert_eq!(owned.values().sum::<u64>(), 3);
+    fn picks(list: &[(&String, u64)]) -> Picks {
+        list.iter().map(|(id, n)| ((*id).clone(), *n)).collect()
     }
 
     #[test]
-    fn duplicates_only_merge_loses_nothing() {
-        let c = ids(1);
-        let mut owned = Owned::new();
-        owned.insert(c[0].clone(), 11);
-        assert_eq!(merge_plan(&owned, 1, &[]).unwrap().1, 0);
+    fn picked_merges_are_checked_and_keep_the_worn_copy() {
+        let c = ids(0);
+        let mut owned = Owned::from([(c[0].clone(), 6), (c[1].clone(), 3), (c[2].clone(), 1)]);
+        let worn = vec![c[1].clone(), "some-pet".to_string()];
+        // Ten copies, but the worn c[1] keeps its last one.
+        assert!(check_picks(&owned, &picks(&[(&c[0], 6), (&c[1], 3), (&c[2], 1)]), &worn).is_err());
+        assert!(check_picks(&owned, &picks(&[(&c[0], 6), (&c[1], 2), (&c[2], 1)]), &worn).is_err(), "only 9");
+        owned.insert(c[3].clone(), 1);
+        let ok = picks(&[(&c[0], 6), (&c[1], 2), (&c[2], 1), (&c[3], 1)]);
+        assert_eq!(check_picks(&owned, &ok, &worn), Ok((0, 3)), "c[0], c[2] and c[3] would be gone");
+        // Mixed rarities, unknown ids, the top rarity.
+        let r1 = ids(1);
+        owned.insert(r1[0].clone(), 1);
+        assert!(check_picks(&owned, &picks(&[(&c[0], 6), (&c[1], 2), (&c[2], 1), (&r1[0], 1)]), &worn).is_err());
+        assert!(check_picks(&owned, &picks(&[(&"no-such".to_string(), 10)]), &[]).is_err());
         let top = ids(RARITIES.len() - 1);
-        owned.insert(top[0].clone(), 20);
-        assert_eq!(stats(&owned, &[])[RARITIES.len() - 1]["canMerge"], false);
+        owned.insert(top[0].clone(), 10);
+        assert!(check_picks(&owned, &picks(&[(&top[0], 10)]), &[]).is_err());
+
+        let got = merge(&mut owned, &ok, &worn).unwrap();
+        assert!(got.rarity == 1 && got.boss.is_empty());
+        assert_eq!(owned.get(&c[1]), Some(&1));
+        assert!(!owned.contains_key(&c[0]) && !owned.contains_key(&c[2]) && !owned.contains_key(&c[3]));
+        assert!(merge(&mut owned, &ok, &worn).is_err(), "used up");
+    }
+
+    #[test]
+    fn fill_uses_spares_first_and_never_a_bosss_last_copy() {
+        let c = ids(0);
+        let boss: Vec<&Deco> = all().iter().filter(|d| !d.boss.is_empty() && d.rarity == 0).take(2).collect();
+        let worn = vec![c[2].clone()];
+        let mut owned = Owned::from([(c[0].clone(), 4), (c[1].clone(), 1), (c[2].clone(), 1), (boss[0].id.clone(), 3), (boss[1].id.clone(), 1)]);
+        // One c[0] picked by hand; then c[0]'s other spares, the boss's spares, and the last copies
+        // of chest ones (not the worn c[2], never a boss's last copy). Seven is all there is.
+        let mut p = picks(&[(&c[0], 1)]);
+        fill_picks(&owned, 0, &worn, &mut p);
+        assert_eq!(p, picks(&[(&c[0], 4), (&c[1], 1), (&boss[0].id, 2)]));
+        owned.insert(c[3].clone(), 5);
+        let mut p = Picks::new();
+        fill_picks(&owned, 0, &worn, &mut p);
+        assert_eq!(p, picks(&[(&c[3], 4), (&c[0], 3), (&boss[0].id, 2), (&c[1], 1)]));
+        assert_eq!(check_picks(&owned, &p, &worn), Ok((0, 1)));
+        assert_eq!(stats(&owned, &worn)[0], json!({ "owned": 15, "usable": 14 }));
     }
 
     #[test]
@@ -279,6 +357,40 @@ mod tests {
         }
         // About a quarter are items (expected 500 of 2000).
         assert!((300..700).contains(&bundles), "{bundles} bundles, {decos} cosmetics");
+    }
+
+    #[test]
+    fn every_boss_drops_its_own_cosmetics() {
+        assert_eq!(BOSS_DROP_WEIGHTS.iter().sum::<u32>(), 1000);
+        assert!(all().iter().all(|d| d.boss.is_empty() || BOSSES.iter().any(|b| b.id == d.boss)), "unknown boss");
+        for b in &BOSSES {
+            let own: Vec<&Deco> = all().iter().filter(|d| d.boss == b.id).collect();
+            let rarities: std::collections::BTreeSet<usize> = own.iter().map(|d| d.rarity).collect();
+            assert!(rarities.len() >= 3, "{} has cosmetics of several rarities", b.id);
+            let total: f64 = own.iter().map(|d| drop_pct(d)).sum();
+            assert!((total - 100.0).abs() < 1e-9, "{}: {total}%", b.id);
+            for _ in 0..50 {
+                assert_eq!(roll_boss_drop(b.id).unwrap().boss, b.id);
+            }
+        }
+        assert!(roll_boss_drop("nobody").is_none() && roll_boss_drop("").is_none());
+    }
+
+    #[test]
+    fn bosses_own_can_go_into_a_merge_but_never_come_out() {
+        for i in 0..2000 {
+            if let Prize::Deco(d) = roll_chest(i % 2 == 0) {
+                assert!(d.boss.is_empty(), "{}", d.id);
+            }
+        }
+        let own = all().iter().find(|d| d.boss == BOSSES[0].id && d.rarity == 0).expect("a 普通 boss cosmetic");
+        let owned = Owned::from([(own.id.clone(), 10)]);
+        let p = picks(&[(&own.id, 10)]);
+        assert_eq!(check_picks(&owned, &p, &[]), Ok((0, 1)));
+        for _ in 0..200 {
+            let got = merge(&mut owned.clone(), &p, &[]).unwrap();
+            assert!(got.rarity == 1 && got.boss.is_empty(), "{}", got.id);
+        }
     }
 
     #[test]

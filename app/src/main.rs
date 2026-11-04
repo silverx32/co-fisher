@@ -2,7 +2,7 @@
 
 mod config;
 mod decos;
-mod keyboard;
+mod input;
 mod net;
 mod steam;
 mod update;
@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cofisher_server::{
-    clean_skin, ItemKind, ServerHandle, ServerOptions, CHARACTERS, ITEM_COUNT, ITEM_IDS, ITEM_KINDS, MAX_PLAYERS, NAME_MAX,
-    UMBRELLA,
+    clean_skin, ItemKind, ServerHandle, ServerOptions, BOSSES, CHARACTERS, ITEM_COUNT, ITEM_IDS, ITEM_KINDS, MAX_PLAYERS,
+    NAME_MAX, UMBRELLA,
 };
 use serde_json::{json, Value};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
@@ -33,7 +33,7 @@ const PET_W: f64 = 910.0;
 const PET_ME_X: f64 = PET_W - 95.0; // where my character stands, from the window's left edge
 const PET_H: f64 = 720.0;
 const TYPING_HOLD_MS: u64 = 700;
-const TICK: Duration = Duration::from_millis(25); // short so each key press shows up right away
+const TICK: Duration = Duration::from_millis(25); // short so each key press / click shows up right away
 const STATUS_EVERY: Duration = Duration::from_millis(150);
 const SAVE_EVERY: Duration = Duration::from_secs(2);
 const CURSOR_POLL: Duration = Duration::from_millis(40);
@@ -218,6 +218,8 @@ async fn init(state: St<'_>) -> Result<Value, ()> {
     Ok(json!({
         "me": { "id": i.config.id, "name": i.config.name, "char": i.config.character, "skin": i.skin },
         "wallet": i.wallet(),
+        "daily": i.config.daily,
+        "dailyLastHits": i.config.daily_last_hits,
         "items": items,
         "serverItems": i.server_items,
         "dnd": i.config.dnd,
@@ -436,7 +438,7 @@ fn buy(app: AppHandle, state: St<'_>, item: String, qty: f64) -> Value {
 #[tauri::command]
 fn open_chest(app: AppHandle, state: St<'_>) -> Value {
     let mut i = state.inner.lock().unwrap();
-    let now = keyboard::now_ms();
+    let now = input::now_ms();
     if decos::chest_cooling(i.config.last_chest_ms, now) {
         return json!({ "ok": false, "error": "宝箱还在冷却中" });
     }
@@ -493,23 +495,39 @@ fn award(i: &mut Inner, prize: decos::Prize) -> (Value, Value, Value) {
     (prize, i.wallet(), i.deco_state())
 }
 
+/// Copies picked on the page (id -> how many); `None` if a count isn't a whole number from 1 to
+/// MERGE_COUNT.
+fn clean_picks(picks: HashMap<String, f64>) -> Option<decos::Picks> {
+    let ok = |n: f64| n.fract() == 0.0 && (1.0..=decos::MERGE_COUNT as f64).contains(&n);
+    picks.into_iter().map(|(id, n)| ok(n).then_some((id, n as u64))).collect()
+}
+
+/// Merges the copies the player picked. Using up the last copy of something needs `confirm`.
 #[tauri::command]
-fn merge_decos(state: St<'_>, rarity: usize, confirm: bool) -> Value {
-    if rarity + 1 >= decos::RARITIES.len() {
-        return json!({ "ok": false, "error": "最高稀有度不能再合成了" });
-    }
+fn merge_decos(state: St<'_>, picks: HashMap<String, f64>, confirm: bool) -> Value {
+    let Some(picks) = clean_picks(picks) else { return json!({ "ok": false, "error": "数量不对" }) };
     let mut i = state.inner.lock().unwrap();
     let worn = i.worn();
-    let Some((_, lose)) = decos::merge_plan(&i.config.decos, rarity, &worn) else {
-        return json!({ "ok": false, "error": format!("需要 {} 个同稀有度的装扮", decos::MERGE_COUNT) });
+    let lose = match decos::check_picks(&i.config.decos, &picks, &worn) {
+        Ok((_, lose)) => lose,
+        Err(e) => return json!({ "ok": false, "error": e }),
     };
     if lose > 0 && !confirm {
         return json!({ "ok": false, "confirm": true, "lose": lose });
     }
-    let got = decos::merge(&mut i.config.decos, rarity, &worn).expect("planned above");
+    let got = decos::merge(&mut i.config.decos, &picks, &worn).expect("checked above");
     let is_new = i.config.decos.get(&got.id) == Some(&1);
     i.touch();
     json!({ "ok": true, "item": got.id, "isNew": is_new, "decoState": i.deco_state() })
+}
+
+/// 补满: tops the copies picked so far up with the ones a merge of `rarity` would use first.
+#[tauri::command]
+fn fill_merge(state: St<'_>, rarity: usize, picks: HashMap<String, f64>) -> Value {
+    let mut picks = clean_picks(picks).unwrap_or_default();
+    let i = state.inner.lock().unwrap();
+    decos::fill_picks(&i.config.decos, rarity, &i.worn(), &mut picks);
+    json!({ "picks": picks })
 }
 
 #[tauri::command]
@@ -735,13 +753,23 @@ fn id_list(v: &Value) -> Vec<String> {
     list.take(MAX_PLAYERS).map(|s| s.chars().take(64).collect()).collect()
 }
 
+/// Which of our bosses a "boss" / "bossDown" message is about: by id, or by name from v2.4
+/// servers, which send none. `None` for one we don't know (only a newer server has it).
+fn boss_id(b: &Value) -> Option<&'static str> {
+    match b.get("id") {
+        Some(id) => BOSSES.iter().find(|k| id.as_str() == Some(k.id)),
+        None => BOSSES.iter().find(|k| b["name"].as_str() == Some(k.name)),
+    }
+    .map(|k| k.id)
+}
+
 /// The room's boss as the page shows it; null from servers without one.
 fn clean_boss(b: &Value) -> Value {
     if !b.is_object() {
         return Value::Null;
     }
     json!({
-        "emoji": clip(&b["emoji"], 8), "name": clip(&b["name"], 16), "level": non_neg(&b["level"]),
+        "id": boss_id(b), "emoji": clip(&b["emoji"], 8), "name": clip(&b["name"], 16), "level": non_neg(&b["level"]),
         "hp": non_neg(&b["hp"]), "max": non_neg(&b["max"]), "in": non_neg(&b["in"]), "minPct": non_neg(&b["minPct"]),
     })
 }
@@ -925,7 +953,8 @@ fn percent(part: u64, total: u64) -> String {
 }
 
 /// The room beat its boss: everyone there who did enough of the damage gets a boss chest, a
-/// lucky one for the last hit.
+/// lucky one for the last hit, which also drops one of the boss's own cosmetics. Every last hit
+/// counts towards the calendar's 最后一击.
 fn on_boss_down(app: &AppHandle, state: &AppState, msg: &Value) {
     let (emoji, name) = (clip(&msg["emoji"], 8), clip(&msg["name"], 16));
     let (killer, killer_name) = (clip(&msg["killer"], 64), clip(&msg["killerName"], NAME_MAX));
@@ -934,11 +963,24 @@ fn on_boss_down(app: &AppHandle, state: &AppState, msg: &Value) {
     let won = id_list(&msg["rewarded"]).contains(&me);
     let share = percent(non_neg(&msg["damage"][me.as_str()]), non_neg(&msg["total"]));
     let need = non_neg(&msg["minPct"]);
-    if won {
+    let mut loot = None; // (cosmetic, first copy)
+    let mut last_hits = Value::Null; // today's new count
+    if lucky || won {
         let mut i = state.inner.lock().unwrap();
         if lucky {
+            let today = win::today();
+            let n = i.config.daily_last_hits.entry(today.clone()).or_default();
+            *n += 1;
+            last_hits = json!({ today: *n });
+        }
+        if won && lucky {
             i.config.lucky_chests += 1;
-        } else {
+            loot = boss_id(msg).and_then(decos::roll_boss_drop).map(|d| {
+                let n = i.config.decos.entry(d.id.clone()).or_default();
+                *n += 1;
+                (d, *n == 1)
+            });
+        } else if won {
             i.config.boss_chests += 1;
         }
         i.touch();
@@ -947,17 +989,22 @@ fn on_boss_down(app: &AppHandle, state: &AppState, msg: &Value) {
         let _ = app.emit("deco-state", d);
     }
     let quiet = !show_effect(app, state, &json!({ "item": "firework", "title": format!("⚔️ 打败了 {emoji} {name}！") }));
+    let prize = match loot {
+        Some((d, _)) => format!("幸运 Boss 宝箱和专属装扮「{}」（{}）", d.name, decos::RARITIES[d.rarity].name),
+        None => "幸运 Boss 宝箱（稀有度更高）".to_string(),
+    };
     let mut line = match (won, lucky) {
-        (true, true) => format!("⚔️ 你补了最后一刀，打败了 {emoji} {name}！伤害 {share}，得到一个幸运 Boss 宝箱（稀有度更高）"),
+        (true, true) => format!("⚔️ 你补了最后一刀，打败了 {emoji} {name}！伤害 {share}，得到一个{prize}"),
         (true, false) => format!("⚔️ {killer_name} 补了最后一刀，打败了 {emoji} {name}！你的伤害 {share}，得到一个 Boss 宝箱"),
-        (false, true) => format!("⚔️ 你补了最后一刀，打败了 {emoji} {name}！可惜伤害只有 {share}，要 {need}% 以上才有宝箱"),
+        (false, true) => format!("⚔️ 你补了最后一刀，打败了 {emoji} {name}！可惜伤害只有 {share}，要 {need}% 以上才有宝箱和专属装扮"),
         (false, false) => format!("⚔️ {killer_name} 打败了 {emoji} {name}！你的伤害只有 {share}，要 {need}% 以上才有宝箱"),
     };
     if quiet {
         line.push_str("（免打扰）");
     }
     let _ = app.emit("log", line);
-    let _ = app.emit("boss-down", json!({ "killerName": killer_name }));
+    let loot = loot.map(|(d, new)| json!({ "id": d.id, "isNew": new }));
+    let _ = app.emit("boss-down", json!({ "killerName": killer_name, "loot": loot, "dailyLastHits": last_hits }));
 }
 
 /// The server used up one of our umbrellas blocking an attack; returns how many are left.
@@ -1184,24 +1231,30 @@ async fn tick_loop(app: AppHandle) {
         n += 1;
         let state = app.state::<Arc<AppState>>();
         state.steam.tick();
-        let now = keyboard::now_ms();
-        let last = keyboard::last_key_ms();
+        let now = input::now_ms();
+        let last = input::last_input_ms();
         let typing = last > 0 && now.saturating_sub(last) < TYPING_HOLD_MS;
         if now.saturating_sub(last) > 3000 {
-            keyboard::clear_held();
+            input::clear_held();
         }
-        let presses = keyboard::take_presses();
+        let presses = input::take_presses();
         let (local, status) = {
             let mut i = state.inner.lock().unwrap();
+            let mut daily = Value::Null; // today's new total, for the calendar
             if presses > 0 {
                 i.config.count += presses;
                 i.config.total += presses;
+                let today = win::today();
+                let n = i.config.daily.entry(today.clone()).or_default();
+                *n += presses;
+                daily = json!({ today: *n });
                 i.touch();
             }
-            let local = (typing != i.typing || i.last_pushed_count != Some(i.config.count)).then(|| {
+            let changed = presses > 0 || typing != i.typing || i.last_pushed_count != Some(i.config.count);
+            let local = changed.then(|| {
                 i.typing = typing;
                 i.last_pushed_count = Some(i.config.count);
-                json!({ "typing": typing, "count": i.config.count, "total": i.config.total, "inv": i.config.inv.to_json() })
+                json!({ "typing": typing, "count": i.config.count, "total": i.config.total, "inv": i.config.inv.to_json(), "daily": daily })
             });
             let status = (i.last_status_at.elapsed() >= STATUS_EVERY).then(|| {
                 let chest = decos::chest_ready(i.config.last_chest_ms, now, i.config.count);
@@ -1320,7 +1373,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             init, set_profile, set_skin, clear_skin, host, join, leave,
             steam_status, steam_rooms, steam_invite,
-            buy, throw_item, open_chest, open_boss_chest, merge_decos, equip_deco,
+            buy, throw_item, open_chest, open_boss_chest, merge_decos, fill_merge, equip_deco,
             check_for_update, apply_update, hit_rects, overlay_idle, set_dnd, quit
         ])
         .setup(move |app| {
@@ -1328,8 +1381,8 @@ fn main() {
             update::cleanup();
             create_windows(&handle)?;
             create_tray(&handle)?;
-            if let Err(e) = keyboard::start() {
-                let _ = handle.emit("toast", format!("键盘监听启动失败：{e}"));
+            if let Err(e) = input::start() {
+                let _ = handle.emit("toast", format!("键盘 / 鼠标监听启动失败（{e}）"));
             }
             let h = handle.clone();
             tauri::async_runtime::spawn(async move {

@@ -13,6 +13,7 @@
       <button data-tab="chars">角色</button>
       <button data-tab="shop">道具</button>
       <button data-tab="decos">装扮</button>
+      <button data-tab="cal">日历</button>
       <button id="closePanel" title="收起">✕</button>
     </div>
 
@@ -104,10 +105,27 @@
         <div id="decoReveal" class="hidden"></div>
       </div>
       <div id="decoWorn" class="box"></div>
-      <div id="decoMerge" class="box"><h4>合成（同稀有度任意 10 个 → 1 个高一级，优先用掉重复的）</h4></div>
+      <div id="decoMerge" class="box"><h4>合成（自己挑 10 件同稀有度的 → 1 件高一级的；Boss 专属的也能当材料，但合成不出来）</h4></div>
       <div id="decoSlotTabs" class="slot-tabs"></div>
       <div id="decoList"></div>
-      <p class="tip">头饰、宠物、特效各能穿一件，点已拥有的就能穿上，再点一次卸下。所有角色通用，好友也能看到。宝箱也可能开出道具；房间里的 Boss 被打败后，每人得一个免费的 Boss 宝箱。</p>
+      <p class="tip">头饰、宠物、特效各能穿一件，点已拥有的就能穿上，再点一次卸下。所有角色通用，好友也能看到。宝箱也可能开出道具；房间里的 Boss 被打败后，每人得一个免费的 Boss 宝箱，补最后一刀的人还会掉一件这只 Boss 的专属装扮（只能这样得到，可以当合成材料）。</p>
+    </section>
+
+    <section data-pane="cal" class="hidden">
+      <div class="cal-top">
+        <div class="balance">今日累计 <b id="calToday">0</b> 次</div>
+        <small id="calHits"></small>
+      </div>
+      <div id="calLevel" class="cal-line"></div>
+      <div class="cal-nav">
+        <button id="calPrev" class="mini" title="上个月">‹</button>
+        <b id="calMonth"></b>
+        <small id="calSum"></small>
+        <button id="calNext" class="mini" title="下个月">›</button>
+      </div>
+      <div id="calGrid" class="cal-grid"></div>
+      <div id="calLegend" class="cal-legend"></div>
+      <p class="tip">键盘每按一下、鼠标每点一下都算一次（只统计次数）。鼠标停在某一天上能看当天的评价。</p>
     </section>
   </div>
 

@@ -1,7 +1,7 @@
 {
   "name": "co-fisher",
   "version": "2.4.0",
-  "description": "联机桌面宠物：敲键盘攒点数，换道具糊好友一脸",
+  "description": "联机桌面宠物：敲键盘、点鼠标攒点数，换道具糊好友一脸",
   "private": true,
   "scripts": {
     "dev": "cargo run -p co-fisher",

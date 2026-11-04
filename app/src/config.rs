@@ -87,6 +87,10 @@ pub struct Config {
     pub lucky_chests: u64,
     /// 免打扰: hits show on the pet only, never full screen.
     pub dnd: bool,
+    /// Key presses + mouse clicks per local day ("2026-11-04" -> count), for the calendar.
+    pub daily: BTreeMap<String, u64>,
+    /// Bosses I landed the last hit on, per local day (days without any are left out).
+    pub daily_last_hits: BTreeMap<String, u64>,
 }
 
 fn null_as_default<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(d: D) -> Result<T, D::Error> {
@@ -128,7 +132,7 @@ fn read_config(path: &Path) -> Config {
                     Ok(c) => c,
                     Err(e) => {
                         // Keep the unreadable file for recovery instead of overwriting it.
-                        let backup = path.with_file_name(format!("config.bad-{}.json", crate::keyboard::now_ms()));
+                        let backup = path.with_file_name(format!("config.bad-{}.json", crate::input::now_ms()));
                         eprintln!("config unreadable ({e}); backed up to {}", backup.display());
                         let _ = fs::copy(path, backup);
                         Config::default()
