@@ -110,8 +110,9 @@ function setDeco(img, id) {
 }
 
 // An avatar has one <img class="deco"> per slot; effects go first, headwear last (on top).
-const SLOT_ORDER = ['fx', 'pet', 'head'];
+const SLOT_ORDER = ['fx', 'body', 'pet', 'head'];
 function setWorn(avatar, ids) {
+  while (avatar.querySelectorAll('img.deco').length < SLOT_ORDER.length) avatar.prepend(el('img', 'deco hidden'));
   const bySlot = SLOT_ORDER.map((s) => ids.find((id) => decoById.get(id)?.slot === s));
   avatar.querySelectorAll('img.deco').forEach((img, k) => setDeco(img, bySlot[k]));
 }
@@ -156,6 +157,7 @@ function renderFriends() {
     let node = friendEls.get(p.id);
     if (!node) {
       node = el('div', 'friend hit');
+      node.dataset.playerId = p.id;
       const actions = el('div', 'factions');
       for (const item of Object.values(S.items).filter((x) => x.kind === 'throw')) {
         const b = el('button', 'fbtn');
@@ -171,7 +173,7 @@ function renderFriends() {
       avatar.append(el('img', 'deco hidden'), el('img', 'deco hidden'), el('img', 'deco hidden'), img);
       const chest = el('span', 'fchest hidden', '🎁');
       chest.title = 'TA 的宝箱可以开了';
-      node.append(el('span', 'ftyping', '⌨'), el('span', 'fbadges'), chest, avatar, el('div', 'fcount'), el('div', 'fname'), actions);
+      node.append(el('span', 'ftyping', '⌨'), el('span', 'fbadges'), chest, avatar, el('div', 'fcount'), el('div', 'fname'), el('button', 'player-game-status fgame hidden'), actions);
       box.append(node);
       friendEls.set(p.id, node);
     }
@@ -202,6 +204,7 @@ function renderFriends() {
     setSrc(node.querySelector('.fimg'), srcFor(p.char, skinOf(p), ft.tapper.frame));
   }
   renderFriendButtons();
+  window.dispatchEvent(new Event('friend-cards-rendered'));
 }
 
 // Each friend card has one button per item, showing how many we own; 0 = disabled.

@@ -66,7 +66,7 @@ pub enum Prize {
 }
 
 /// (id, name) of each slot; one item per slot can be worn at a time.
-pub const SLOTS: [(&str, &str); 3] = [("head", "头饰"), ("pet", "宠物"), ("fx", "特效")];
+pub const SLOTS: [(&str, &str); 4] = [("head", "头饰"), ("body", "衣服"), ("pet", "宠物"), ("fx", "特效")];
 
 #[derive(Deserialize, Clone)]
 pub struct Deco {
@@ -279,7 +279,9 @@ mod tests {
 
     #[test]
     fn catalogue_is_complete() {
-        assert_eq!(all().iter().filter(|d| d.boss.is_empty()).count(), 140);
+        assert_eq!(all().iter().filter(|d| d.boss.is_empty()).count(), 164);
+        assert_eq!(all().iter().filter(|d|d.id.starts_with("meme-")&&d.rarity==3).count(),12);
+        assert_eq!(all().iter().filter(|d|d.id.starts_with("meme-")&&d.rarity==4).count(),12);
         for (slot, _) in SLOTS {
             assert!(all().iter().any(|d| d.slot == slot), "slot {slot} has items");
         }

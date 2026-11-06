@@ -22,6 +22,8 @@ use tokio_tungstenite::tungstenite::Message;
 
 mod cards;
 mod games;
+mod tables;
+mod mahjong;
 
 pub const PROTOCOL_VERSION: u64 = 2;
 pub const DEFAULT_PORT: u16 = 23333;

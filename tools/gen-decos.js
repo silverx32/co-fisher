@@ -2952,6 +2952,69 @@ add('boss-demon-crown', '魔王之冠', 2, demonCrown, { slot: 'head', boss: 'de
 add('boss-demon-wings', '恶魔之翼', 3, demonWings, { slot: 'fx', boss: 'demon', layer: 'back', glow: '#9775fa' });
 add('boss-demon-fire', '地狱业火', 4, hellfire, { slot: 'fx', boss: 'demon', layer: 'back', glow: '#be4bdb', outline: 0 });
 
+// ---------------------------------------------------------------- meme collection (append-only ids)
+function memeBuddy(c, theme, mythic) {
+  const x=278,y=252;
+  if(theme==='cat'){
+    c.fill(ellipse(x,y+21,23,32),shade('#e8a048',y-10,y+55));
+    c.fill([[x-25,y-23],[x-28,y-58],[x-5,y-39]],solid('#d78e36'));c.fill([[x+25,y-23],[x+28,y-58],[x+5,y-39]],solid('#d78e36'));
+    c.fill(ellipse(x,y-22,29,24),shade('#e8ae65',y-48,y+5));
+    for(const s of [-1,1]){c.fill(ellipse(x+s*12,y-25,8,4,-s*.2),solid('#91b86b'));c.fill(ellipse(x+s*12,y-25,2,4),solid('#263524'));}
+    c.fill([[x-8,y-12],[x+8,y-12],[x,y+4]],solid('#443127'));c.fill([[x-6,y-12],[x-2,y-12],[x-4,y-6]],solid('#fffbe7'));
+    for(const s of [-1,1])for(let k=0;k<3;k++)c.fill(stroke([[x+s*16,y-10+k*4],[x+s*36,y-13+k*5]],1),solid('#875e36'));
+  }else if(theme==='frog'){
+    c.fill(ellipse(x,y+15,27,35),shade('#f4ca3d',y-20,y+55));c.fill(ellipse(x,y+25,19,25),shade('#fff0b2',y,y+55));
+    c.fill(ellipse(x,y-18,29,22),shade('#f6d64b',y-44,y+8));
+    for(const s of [-1,1]){c.fill(ellipse(x+s*15,y-38,13,16),shade('#c6da5a',y-55,y-20));c.fill(ellipse(x+s*15,y-39,8,11),solid('#b9f28b'));c.fill(ellipse(x+s*16,y-36,4,7),solid('#3d3928'));c.fill(ellipse(x+s*28,y+26,6,15,s*.7),shade('#716440',y+10,y+40));}
+    c.fill(ellipse(x,y-9,17,12),solid('#67512b'));c.fill(ellipse(x,y-3,11,5),solid('#d98465'));
+  }else if(theme==='ball'){
+    c.fill(circle(x,y,27),shade('#e89334',y-27,y+27));c.fill(stroke([[x-27,y],[x+27,y]],2),solid('#70502f'));c.fill(stroke([[x,y-27],[x,y+27]],2),solid('#70502f'));c.fill(ellipse(x,y,14,27),solid('#6a4a2e'));c.fill(ellipse(x,y,12,27),shade('#dc8832',y-27,y+27));
+    c.fill(ellipse(x,y+34,31,6),solid('#392365',.6));
+  }else{
+    c.fill(roundRect(x-17,y-32,34,79,8),vgrad('#ee9b34','#94491a',y-32,y+47));c.fill(roundRect(x-13,y-42,26,13,3),shade('#d64131',y-42,y-29));c.fill(roundRect(x-18,y-5,36,27,3),shade('#dc4e35',y-5,y+22));c.fill(ellipse(x,y+7,11,9),solid('#fff1a5'));c.fill(ellipse(x,y+7,8,6),solid('#e8ba39'));
+  }
+  if(mythic){c.fill(star(x,y-67,14,6),goldPaint(y-80,y-53));for(const [dx,dy]of[[-37,-34],[35,-13],[-32,32],[33,48]])sparkle(c,x+dx,y+dy,5,'#fff0a5');}
+}
+function memeHood(c,theme,mythic){
+  const color=theme==='cat'?'#e5a659':theme==='frog'?'#f0d451':theme==='ball'?'#7c4bcc':'#df5632';
+  if(theme==='cat'){
+    c.fill([[109,74],[117,18],[153,60]],shade(color,18,87));c.fill([[227,74],[219,18],[183,60]],shade(color,18,87));c.fill(ellipse(HX,69,62,27),shade(color,43,94));
+    for(const s of [-1,1])c.fill(stroke([[HX+s*27,59],[HX+s*38,68]],4),solid('#6e4e36'));
+  }else if(theme==='frog'){
+    c.fill(ellipse(HX,68,62,29),shade(color,35,97));for(const s of [-1,1]){c.fill(ellipse(HX+s*31,35,22,25),shade('#dce866',10,61));c.fill(ellipse(HX+s*31,35,13,17),solid('#b9ed88'));c.fill(ellipse(HX+s*31,39,6,10),solid('#564c2d'));}
+    c.fill(ellipse(HX,72,24,12),solid('#725334'));c.fill(ellipse(HX,76,16,6),solid('#d98e78'));
+  }else if(theme==='ball'){
+    c.fill(roundRect(HX-64,65,128,22,8),shade('#7845b2',65,87));for(const y of[66,84])c.fill(rect(HX-59,y,118,3),goldPaint(y,y+3));c.fill(star(HX,75,9,4),solid('#ffe07d'));
+  }else{
+    c.fill(roundRect(HX-31,15,62,63,12),vgrad('#f2c458','#b45a21',15,80));c.fill(roundRect(HX-24,4,48,15,4),shade('#d73d31',4,19));c.fill(roundRect(HX-34,39,68,28,3),shade('#df5137',39,67));c.fill(circle(HX,53,11),solid('#ffe19a'));c.fill(ellipse(HX,82,63,12),shade('#eeaa43',70,94));
+  }
+  if(mythic){for(const s of[-1,1]){c.fill(star(HX+s*76,55,12,5),goldPaint(40,68));sparkle(c,HX+s*48,14,6,'#fff3bc');}c.fill(star(HX,4,11,5),solid('#ffe7a1'));}
+}
+function digit(c,n,x,y){const segments={2:[0,1,3,4,6],4:[1,2,3,5]};const bars=[[x,y,16,3],[x+13,y,3,16],[x,y,3,16],[x,y+14,16,3],[x,y+16,3,16],[x+13,y+16,3,16],[x,y+29,16,3]];for(const k of segments[n])c.fill(roundRect(...bars[k],1),solid('#fff0ad'));}
+function memeClothes(c,theme,mythic){
+  const tea=theme==='tea',color=tea?'#d9472d':'#6536a0';
+  c.fill([[111,211],[137,201],[151,212],[175,212],[191,201],[216,214],[223,243],[201,251],[198,316],[125,316],[122,251],[101,242]],shade(color,201,316));
+  c.fill(stroke([[137,202],[151,216],[175,216],[191,202]],5),solid(tea?'#ffda62':'#f2c64b'));
+  for(const x of[128,194])c.fill(rect(x,241,3,68),solid('#f7d37c'));
+  if(tea){c.fill(roundRect(130,236,65,37,4),shade('#efa94c',236,273));c.fill(ellipse(163,254,18,12),solid('#ffe59a'));c.fill(ellipse(163,254,12,8),solid('#e0b43f'));c.fill(stroke([[148,254],[178,254]],1),solid('#fff2b1'));}
+  else{digit(c,2,140,237);digit(c,4,163,237);}
+  if(mythic){for(const s of[-1,1]){c.fill(star(HX+s*55,222,9,4),goldPaint(210,235));sparkle(c,HX+s*60,282,6,'#fff0ae');}c.fill(rect(128,309,67,4),goldPaint(309,315));}
+}
+function memeAura(c,theme,mythic){
+  const cc=theme==='cat'?'#ffc56c':theme==='frog'?'#d8ef6e':'#e0c1ff';
+  c.fill(ellipse(HX,193,142,125),radial(cc,cc,HX,193,150,.08,0));
+  for(let i=0;i<(mythic?16:10);i++){const a=i*Math.PI*2/(mythic?16:10),x=HX+Math.cos(a)*135,y=187+Math.sin(a)*126;if(theme==='frog'){c.fill(circle(x,y,7),glossy('#efdd54',x,y,7));}else if(theme==='ball'){c.fill(circle(x,y,7),glossy('#eaa344',x,y,7));}else{c.fill(star(x,y,mythic?8:6,3),solid(cc));}}
+  if(mythic)c.fill(ring(HX,187,149,135,2.5),solid(cc,.7));
+}
+for(const [theme,label,third]of[['cat','哈基米','fx'],['frog','奶蛙','fx'],['ball','牢大','body'],['tea','冰红茶','body']]){
+  for(const [rarity,mythic,suffix]of[[3,false,'传说'],[4,true,'神话']]){
+    const glow=theme==='frog'?'#e3ed8b':theme==='ball'?'#c4a0ed':'#ffd58e';
+    add(`meme-${theme}-hood-${rarity}`,`${label}·${theme==='ball'?'紫金头带':theme==='tea'?'茶瓶帽':'整活头套'}·${suffix}`,rarity,c=>memeHood(c,theme,mythic),{slot:'head',glow});
+    add(`meme-${theme}-buddy-${rarity}`,`${label}·${mythic?'金色传说伙伴':'摸鱼伙伴'}`,rarity,c=>memeBuddy(c,theme,mythic),{slot:'pet',glow});
+    add(`meme-${theme}-${third}-${rarity}`,`${label}·${third==='body'?(theme==='ball'?'紫金24号球衣':'红茶卫衣'):'抽象圣环'}·${suffix}`,rarity,c=>third==='body'?memeClothes(c,theme,mythic):memeAura(c,theme,mythic),{slot:third,layer:third==='fx'?'back':'front',glow,outline:third==='fx'?0:1.3});
+  }
+}
+
 // ---------------------------------------------------------------- output
 function main() {
   const root = path.join(__dirname, '..');
@@ -2959,10 +3022,13 @@ function main() {
   const counts = [0, 0, 0, 0, 0];
   for (const it of ITEMS) counts[it.rarity]++;
   if (new Set(ITEMS.map((i) => i.id)).size !== ITEMS.length) throw new Error('duplicate ids');
-  fs.rmSync(out, { recursive: true, force: true });
+  const onlyNew=process.argv.includes('--only-new');
+  const previous=onlyNew&&fs.existsSync(path.join(out,'decos.json'))?new Map(JSON.parse(fs.readFileSync(path.join(out,'decos.json'),'utf8')).map(it=>[it.id,it])):new Map();
+  if(!onlyNew) fs.rmSync(out, { recursive: true, force: true });
   fs.mkdirSync(out, { recursive: true });
   const images = [];
   for (const it of ITEMS) {
+    if(onlyNew&&previous.has(it.id)&&fs.existsSync(path.join(out,`${it.id}.png`))){it.box=previous.get(it.id).box;if(process.argv.includes('--preview'))images.push(decodePng(path.join(out,`${it.id}.png`)));continue;}
     const c = new Canvas();
     it.draw(c);
     const img = finish(c.reduce(), it.opts);
@@ -2973,7 +3039,7 @@ function main() {
   }
   const manifest = ITEMS.map(({ id, name, rarity, slot, layer, box, boss }) => ({ id, name, rarity, slot, layer, box, ...(boss && { boss }) }));
   fs.writeFileSync(path.join(out, 'decos.json'), `[\n${manifest.map((m) => `  ${JSON.stringify(m)}`).join(',\n')}\n]\n`);
-  const slots = ['head', 'pet', 'fx'].map((k) => `${k} ${ITEMS.filter((i) => i.slot === k).length}`).join(', ');
+  const slots = ['head', 'body', 'pet', 'fx'].map((k) => `${k} ${ITEMS.filter((i) => i.slot === k).length}`).join(', ');
   console.log(`\n${ITEMS.length} decos (by rarity: ${counts.join(' / ')}; ${slots}) -> ${path.relative(root, out)}`);
   if (process.argv.includes('--preview')) preview(root, images);
 }
@@ -3001,7 +3067,7 @@ function preview(root, images) {
     return { img: resize(im, cw, ch), x: BOX.x + Math.round((BOX.w - cw) / 2) };
   });
   fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
-  for (const slot of ['head', 'pet', 'fx']) {
+  for (const slot of ['head', 'body', 'pet', 'fx']) {
     const idx = ITEMS.map((it, i) => (it.slot === slot ? i : -1)).filter((i) => i >= 0);
     const cols = 8; const rows = Math.ceil(idx.length / cols);
     const sheet = { w: cols * W, h: rows * H, px: Buffer.alloc(cols * W * rows * H * 4) };

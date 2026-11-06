@@ -432,7 +432,7 @@ async fn leave(app: AppHandle, state: St<'_>) -> Result<Value, ()> {
 fn game_command(app:AppHandle,state:St<'_>,mut action:Value)->Value {
     if !action.is_object(){return json!({"ok":false,"error":"无效操作"});}
     let op=action["op"].as_str().unwrap_or("").to_string();
-    if !["join","start","leave","hit","stand","fold","check","call","raise","allin","bid","pass","play","sync"].contains(&op.as_str()) {
+    if !["join","start","leave","hit","stand","fold","check","call","raise","allin","bid","pass","play","sync","watch","exchange","que","discard","peng","gang","hu"].contains(&op.as_str()) {
         return json!({"ok":false,"error":"未知操作"});
     }
     let mut i=state.inner.lock().unwrap();
@@ -441,8 +441,9 @@ fn game_command(app:AppHandle,state:St<'_>,mut action:Value)->Value {
     if op=="join" {
         if config::save_disabled(){return json!({"ok":false,"error":"存档不可写，暂时不能报名"});}
         let kind=action["kind"].as_str().unwrap_or("").to_string();
-        if !["blackjack","holdem","ddz"].contains(&kind.as_str()){return json!({"ok":false,"error":"未知游戏"});}
+        if !["blackjack","holdem","ddz","mahjong"].contains(&kind.as_str()){return json!({"ok":false,"error":"未知游戏"});}
         let ticket=match i.config.reserve_game(&kind){Ok(t)=>t,Err(e)=>return json!({"ok":false,"error":e})};
+        if let Some(ticket)=i.config.game_ticket.as_mut(){ticket.table_id=action["tableId"].as_str().map(String::from);ticket.create=action["create"].as_bool()==Some(true);}
         action["ticket"]=ticket.into();action["count"]=i.config.count.saturating_add(500).into();
         action["gameEpoch"]=i.config.game_epoch.clone().into();action["gameOffset"]=(i.config.game_offset+500).into();
         config::save(&i.config);i.status_soon();
@@ -896,7 +897,7 @@ fn on_net_event(app: &AppHandle, ev: NetEvent) {
                     i.config.game_new_epoch(epoch);
                     config::save(&i.config);
                     if let Some(ticket)=&i.config.game_ticket {
-                        state.net.send(&json!({"t":"game","op":"join","epoch":epoch,"ticket":ticket.ticket,"kind":ticket.kind,
+                        state.net.send(&json!({"t":"game","op":"join","epoch":epoch,"ticket":ticket.ticket,"kind":ticket.kind,"tableId":ticket.table_id,"create":ticket.create,
                             "count":i.config.count.saturating_add(500),"gameEpoch":epoch,"gameOffset":i.config.game_offset+500}));
                     }
                 }

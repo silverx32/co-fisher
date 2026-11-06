@@ -104,6 +104,10 @@ pub struct GameTicket {
     pub kind: String,
     pub epoch: String,
     pub applied: i64,
+    #[serde(default)]
+    pub table_id: Option<String>,
+    #[serde(default)]
+    pub create: bool,
 }
 
 impl Config {
@@ -112,7 +116,7 @@ impl Config {
         if self.count<500 {return Err("报名需要 500 点");}
         let ticket=random_hex(16);
         self.count-=500;self.game_offset-=500;
-        self.game_ticket=Some(GameTicket{ticket:ticket.clone(),kind:kind.into(),epoch:self.game_epoch.clone(),applied:-500});
+        self.game_ticket=Some(GameTicket{ticket:ticket.clone(),kind:kind.into(),epoch:self.game_epoch.clone(),applied:-500,table_id:None,create:false});
         Ok(ticket)
     }
     pub fn game_receipt(&mut self,receipt:&Value)->bool {

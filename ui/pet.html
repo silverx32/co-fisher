@@ -21,6 +21,7 @@
 
     <section data-pane="room">
       <div class="status"><span id="netDot" class="dot"></span><span id="netText">未连接</span></div>
+      <button id="roomGameSummary" class="room-game-summary hidden" title="查看房间牌桌"></button>
       <div id="steamBar" class="steam-bar">
         <span id="steamText">Steam 检测中…</span>
         <button id="steamRetryBtn" class="mini hidden">重试</button>
@@ -114,7 +115,7 @@
       <div id="decoMerge" class="box"><h4>合成（自己挑 10 件同稀有度的 → 1 件高一级的；Boss 专属的也能当材料，但合成不出来）</h4></div>
       <div id="decoSlotTabs" class="slot-tabs"></div>
       <div id="decoList"></div>
-      <p class="tip">头饰、宠物、特效各能穿一件，点已拥有的就能穿上，再点一次卸下。所有角色通用，好友也能看到。宝箱也可能开出道具；房间里的 Boss 被打败后，每人得一个免费的 Boss 宝箱，补最后一刀的人还会掉一件这只 Boss 的专属装扮（只能这样得到，可以当合成材料）。</p>
+      <p class="tip">头饰、衣服、宠物、特效各能穿一件，点已拥有的就能穿上，再点一次卸下。所有角色通用，好友也能看到。宝箱也可能开出道具；房间里的 Boss 被打败后，每人得一个免费的 Boss 宝箱，补最后一刀的人还会掉一件这只 Boss 的专属装扮（只能这样得到，可以当合成材料）。</p>
     </section>
 
     <section data-pane="cal" class="hidden">
@@ -139,11 +140,14 @@
   <!-- Bottom row: friends line up to the left of me, in join order; the room's boss stands over them. -->
   <div id="stage">
     <div id="side">
-      <div id="boss" class="hit hidden">
+      <div id="roomActivity">
+        <button id="gameDock" class="hit hidden" title="查看牌桌，收起不会结束牌局"></button>
+        <div id="boss" class="hit hidden">
         <div id="bossEmoji"></div>
         <div class="boss-info">
           <div class="boss-title"><b id="bossName"></b><small id="bossLevel"></small><small id="bossMine"></small></div>
           <div class="boss-bar"><div id="bossFill"></div><span id="bossHp"></span></div>
+        </div>
         </div>
       </div>
       <div id="friends"></div>
@@ -166,11 +170,11 @@
         <div id="myName"></div>
         <button id="myUpdate" class="hit hidden" title="有新版本，点击查看更新内容">🆕 新版本</button>
       </div>
+      <button id="myGameStatus" class="player-game-status hit hidden"></button>
     </div>
   </div>
 
   <div id="toast" class="hidden"></div>
-  <button id="gameDock" class="hit hidden" title="展开牌桌，收起不会结束牌局"></button>
 </div>
 <script src="api.js"></script>
 <script src="pet.js"></script>

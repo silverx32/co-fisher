@@ -66,8 +66,35 @@ const id = (n) => `player-${String(n).padStart(4, '0')}`;
 const gameState = (c) => c.inbox.filter(m => m.t === 'gameState').at(-1);
 function gameCommand(c, op, extra = {}) {
   const state = gameState(c);
-  c.send({ t: 'game', op, epoch: state.epoch, revision: state.revision, ...extra });
+  c.send({ t: 'game', op, epoch: state.epoch, revision: state.tableRevision ?? state.revision, tableId: state.table?.id, ...extra });
 }
+
+test('mahjong: four seats, simultaneous exchange/que, private tiles and spectator isolation',()=>withServer([],async port=>{
+  const cs=[61,62,63,64,65].map(n=>client(port,{id:id(n),name:`M${n}`,count:2000}));
+  try{
+    await Promise.all(cs.map(c=>c.wait(m=>m.t==='gameState')));
+    for(let i=0;i<4;i++){
+      gameCommand(cs[i],'join',{kind:'mahjong',ticket:String(61+i).padStart(32,'0'),count:2000});await cs[i].wait(m=>m.t==='gameState'&&m.table?.seats.length===i+1);
+      if(i===2){gameCommand(cs[0],'start');await cs[0].wait(m=>m.t==='gameError'&&m.text.includes('四人'));}
+    }
+    gameCommand(cs[0],'start');await Promise.all(cs.map(c=>c.wait(m=>m.t==='gameState'&&m.table?.mahjong?.phase==='exchange')));
+    for(let i=0;i<4;i++){
+      const v=gameState(cs[i]);const players=v.table.mahjong.players;assert.equal(players[i].hand.length,i===0?14:13);
+      assert(players.every((p,j)=>j===i||p.hand===null));assert(v.tables.every(t=>t.seats.every(s=>!('cards'in s)&&!('hand'in s))));
+      const suits=[0,1,2].map(s=>players[i].hand.filter(t=>Math.floor(t/36)===s));const selected=suits.find(a=>a.length>=3).slice(0,3);
+      gameCommand(cs[i],'exchange',{tiles:selected,mjPhase:'exchange'});
+    }
+    await Promise.all(cs.slice(0,4).map(c=>c.wait(m=>m.t==='gameState'&&m.table?.mahjong?.phase==='que')));
+    const all=[];
+    for(let i=0;i<4;i++){const h=gameState(cs[i]).table.mahjong.players[i].hand;all.push(...h);const counts=[0,1,2].map(s=>h.filter(t=>Math.floor(t/36)===s).length);gameCommand(cs[i],'que',{suit:counts.indexOf(Math.min(...counts)),mjPhase:'que'});}
+    assert.equal(new Set(all).size,53);
+    await cs[0].wait(m=>m.t==='gameState'&&m.table?.mahjong?.phase==='discard');
+    const v=gameState(cs[0]),p=v.table.mahjong.players[0];const discard=p.hand.find(t=>Math.floor(t/36)===p.missing)??p.hand[0];gameCommand(cs[0],'discard',{tile:discard,mjPhase:'discard'});
+    await cs[0].wait(m=>m.t==='gameState'&&m.tableRevision>v.tableRevision);
+    assert(gameState(cs[4]).table.mahjong.players.every(p=>p.hand===null));
+    gameCommand(cs[4],'discard',{tile:0,mjPhase:'discard'});await cs[4].wait(m=>m.t==='gameError');
+  }finally{for(const c of cs)c.ws.close();}
+}));
 
 test('games: entry is idempotent, only first entrant starts, hands stay private and payout is 80%', () => withServer([], async (port) => {
   const clients = [31,32,33,34].map(n => client(port,{id:id(n),name:`P${n}`,count:2000}));

@@ -1,17 +1,18 @@
 //! One authoritative table per social room. Snapshots are personalized: private
 //! hands never enter the ordinary room broadcast, including for spectators.
 use crate::cards::{self, Pattern};
+pub use crate::tables::Games;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 pub const ENTRY: u64 = 500;
 const TURN: Duration = Duration::from_secs(30);
-#[derive(Clone)]
-struct Receipt {
-    ticket: String,
-    net: i64,
-    final_: bool,
+#[derive(Clone, PartialEq)]
+pub(crate) struct Receipt {
+    pub ticket: String,
+    pub net: i64,
+    pub final_: bool,
 }
 #[derive(Clone)]
 struct Seat {
@@ -54,16 +55,17 @@ struct Table {
     winners: Vec<String>,
     reveal: bool,
     entrants: usize,
+    mahjong: Option<crate::mahjong::Mahjong>,
 }
-pub struct Games {
+pub(crate) struct SingleGame {
     pub epoch: String,
     pub revision: u64,
     table: Option<Table>,
-    receipts: HashMap<String, Receipt>,
-    offsets: HashMap<String, i64>,
+    pub receipts: HashMap<String, Receipt>,
+    pub offsets: HashMap<String, i64>,
     used: VecDeque<String>,
 }
-impl Default for Games {
+impl Default for SingleGame {
     fn default() -> Self {
         Self {
             epoch: cards::token(),
@@ -75,7 +77,7 @@ impl Default for Games {
         }
     }
 }
-impl Games {
+impl SingleGame {
     pub fn offset(&self, id: &str) -> i64 {
         self.offsets.get(id).copied().unwrap_or(0)
     }
@@ -103,7 +105,7 @@ impl Games {
             .map(|r| json!({"ticket":r.ticket,"net":r.net,"final":r.final_}));
         let table = self.table.as_ref().map(|t| {
             let mine = t.seats.iter().position(|s| s.id == id);
-            let can_act = t.phase != "lobby" && t.phase != "intermission" && t.phase != "finished" && mine == Some(t.turn);
+            let can_act = t.mahjong.as_ref().map_or_else(||t.phase != "lobby" && t.phase != "intermission" && t.phase != "finished" && mine == Some(t.turn),|m|mine.is_some_and(|i|m.can_act(i)));
             json!({
                 "kind":t.kind,"phase":t.phase,"round":t.round,"turn":t.seats.get(t.turn).map(|s| &s.id),
                 "host":t.seats.first().map(|s| &s.id),"entry":ENTRY,"pot":t.entrants as u64*ENTRY,
@@ -120,7 +122,7 @@ impl Games {
                     "bet":s.bet,"committed":s.committed,"folded":s.folded,"stood":s.stood,
                     "count":s.hand.len(),"cards":if mine==Some(i) || (t.reveal && !s.folded && t.kind=="holdem") || (t.reveal && t.kind=="blackjack") { Some(&s.hand) } else { None },
                     "score":if t.kind=="blackjack" && (mine==Some(i)||t.reveal) { Some(cards::blackjack(&s.hand)) } else { None },
-                })).collect::<Vec<_>>()
+                })).collect::<Vec<_>>(),"mahjong":t.mahjong.as_ref().map(|m|m.snapshot(mine)),
             })
         });
         json!({"t":"gameState","epoch":self.epoch,"revision":self.revision,"table":table,"receipt":receipt})
@@ -155,7 +157,7 @@ impl Games {
             }
             let kind = msg["kind"]
                 .as_str()
-                .filter(|k| ["blackjack", "holdem", "ddz"].contains(k))
+                .filter(|k| ["blackjack", "holdem", "ddz", "mahjong"].contains(k))
                 .ok_or("未知游戏")?;
             if self.table.as_ref().is_none_or(|t| t.phase == "finished") {
                 self.table = Some(Table::new(kind));
@@ -169,6 +171,7 @@ impl Games {
             }
             let max = match kind {
                 "ddz" => 3,
+                "mahjong" => 4,
                 "holdem" => 9,
                 _ => 16,
             };
@@ -217,8 +220,11 @@ impl Games {
             if t.phase != "lobby" || i != 0 {
                 return Err("只有第一位报名者可以开局".into());
             }
-            if t.seats.len() < 3 || (t.kind == "ddz" && t.seats.len() != 3) {
-                return Err("至少三人报名；斗地主必须三人".into());
+            if t.seats.len() < 3
+                || (t.kind == "ddz" && t.seats.len() != 3)
+                || (t.kind == "mahjong" && t.seats.len() != 4)
+            {
+                return Err("至少三人报名；斗地主三人，四川麻将四人".into());
             }
             t.begin();
             self.after_begin(t);
@@ -238,11 +244,19 @@ impl Games {
                 }
                 return Ok(());
             }
+            if t.kind == "mahjong" && t.mahjong.as_ref().is_some_and(|m| m.won[i]) {
+                return Err("已经胡牌，请等待本局结算".into());
+            }
             t.seats[i].left = true;
             t.seats[i].alive = false;
             t.seats[i].folded = true;
             t.seats[i].stood = true;
             self.receipt(&t.seats[i], 0, true);
+            if t.kind == "mahjong" {
+                t.mahjong.as_mut().unwrap().forfeit(i);
+                self.sync_mahjong(t);
+                return Ok(());
+            }
             if t.kind == "ddz" {
                 let winners: Vec<usize> = if let Some(l) = t.landlord {
                     (0..t.seats.len())
@@ -267,6 +281,16 @@ impl Games {
             } else {
                 self.advance_blackjack(t);
             }
+            return Ok(());
+        }
+        if t.kind == "mahjong" && t.phase != "lobby" && t.phase != "finished" {
+            if msg["revision"].as_u64() != Some(self.revision)
+                && !t.mahjong.as_ref().unwrap().accepts_stale(msg)
+            {
+                return Err("局面已变化，请重新操作".into());
+            }
+            t.mahjong.as_mut().unwrap().command(i, msg)?;
+            self.sync_mahjong(t);
             return Ok(());
         }
         if !t.seats[i].alive
@@ -307,6 +331,14 @@ impl Games {
         let Some(mut t) = self.table.take() else {
             return;
         };
+        if t.phase == "mahjong" {
+            if t.mahjong.as_mut().unwrap().tick() {
+                self.sync_mahjong(&mut t);
+                self.revision += 1;
+            }
+            self.table = Some(t);
+            return;
+        }
         if !["lobby", "finished"].contains(&t.phase.as_str()) && Instant::now() >= t.deadline {
             if t.phase == "intermission" {
                 t.begin();
@@ -368,11 +400,35 @@ impl Games {
         }
     }
     fn after_begin(&mut self, t: &mut Table) {
+        if t.kind == "mahjong" {
+            self.sync_mahjong(t);
+            return;
+        }
         if t.kind == "blackjack" {
             self.advance_blackjack(t);
         } else if t.kind == "holdem" {
             let after = (t.turn + t.seats.len() - 1) % t.seats.len();
             self.advance_poker(t, after);
+        }
+    }
+    fn sync_mahjong(&mut self, t: &mut Table) {
+        let m = t.mahjong.as_ref().unwrap();
+        t.turn = m.turn;
+        t.deadline = m.deadline;
+        t.note = m.note.clone();
+        for (i, s) in t.seats.iter_mut().enumerate() {
+            s.alive = !m.won[i] && !m.left[i];
+        }
+        if m.finished {
+            t.phase = "finished".into();
+            t.winners = m
+                .first_winners()
+                .iter()
+                .map(|i| t.seats[*i].id.clone())
+                .collect();
+            for (i, s) in t.seats.iter().enumerate() {
+                self.receipt(s, m.payouts[i], true);
+            }
         }
     }
     fn champion(&mut self, t: &mut Table) -> bool {
@@ -740,6 +796,7 @@ impl Table {
             winners: vec![],
             reveal: false,
             entrants: 0,
+            mahjong: None,
         }
     }
     fn next(&self, after: usize, predicate: impl Fn(&Seat) -> bool) -> usize {
@@ -789,6 +846,10 @@ impl Table {
         self.pending = vec![false; self.seats.len()];
         self.can_raise = vec![true; self.seats.len()];
         match self.kind.as_str() {
+            "mahjong" => {
+                self.phase = "mahjong".into();
+                self.mahjong = Some(crate::mahjong::Mahjong::new());
+            }
             "blackjack" => {
                 self.phase = "blackjack".into();
                 for s in &mut self.seats {
@@ -860,6 +921,33 @@ impl Table {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type Games = SingleGame;
+    #[test]
+    fn mahjong_settlement_is_final_once_and_consumes_exactly_twenty_percent() {
+        let mut g = Games::default();
+        for id in ["a", "b", "c", "d"] {
+            join(&mut g, id, "mahjong");
+        }
+        g.command("a", "a", &json!({"epoch":g.epoch,"op":"start"}), 0)
+            .unwrap();
+        for id in ["b", "c", "d"] {
+            g.command(id, id, &json!({"epoch":g.epoch,"op":"leave"}), 0)
+                .unwrap();
+        }
+        assert_eq!(g.snapshot("a")["table"]["phase"], "finished");
+        assert_eq!(g.offset("a"), 1100);
+        assert_eq!(
+            ["a", "b", "c", "d"]
+                .iter()
+                .map(|id| g.offset(id))
+                .sum::<i64>(),
+            -400
+        );
+        let revision = g.revision;
+        g.tick();
+        assert_eq!(g.revision, revision);
+        assert_eq!(g.offset("a"), 1100);
+    }
     fn join(g: &mut Games, id: &str, kind: &str) {
         g.command(
             id,
