@@ -27,6 +27,7 @@ pub enum NetEvent {
     BossDown(Value),
     Log(String),
     ThrowResult(Value),
+    Game(Value),
 }
 
 pub type HelloFn = Arc<dyn Fn() -> Value + Send + Sync>;
@@ -241,6 +242,7 @@ impl Net {
                             Some("hit") => self.emit(generation, NetEvent::Hit(v)),
                             Some("bossDown") => self.emit(generation, NetEvent::BossDown(v)),
                             Some("throwResult") => self.emit(generation, NetEvent::ThrowResult(v)),
+                            Some("gameState") | Some("gameError") => self.emit(generation, NetEvent::Game(v)),
                             Some("log") => {
                                 if let Some(t) = v["text"].as_str() {
                                     self.emit(generation, NetEvent::Log(t.chars().take(80).collect()));

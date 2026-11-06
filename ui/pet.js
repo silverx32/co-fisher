@@ -396,6 +396,7 @@ function openPanel(tab) {
 }
 
 function switchTab(tab) {
+  $('#panel').classList.toggle('games-panel', tab === 'games');
   document.querySelectorAll('.tabs button[data-tab]').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('section[data-pane]').forEach((s) => s.classList.toggle('hidden', s.dataset.pane !== tab));
   if (tab === 'room' && S.net === 'offline' && S.steam?.available) refreshSteamRooms();
@@ -562,6 +563,7 @@ $('#steamRefreshBtn').addEventListener('click', () => refreshSteamRooms());
 
 $('#leaveBtn').addEventListener('click', async () => {
   const r = await api.leave();
+  if (!r.ok) { toast(r.error); return; }
   S.server = r.server;
   S.players = [];
   renderFriends();

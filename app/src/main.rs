@@ -90,6 +90,8 @@ struct Inner {
     server_items: Vec<&'static str>,
     /// The room's boss as the page shows it (null when there's none).
     boss: Value,
+    game: Value,
+    games_supported: bool,
     /// Umbrella blocks heard about on this connection (see `blocked` in the server).
     blocks_seen: u64,
     splat_times: VecDeque<Instant>,
@@ -147,7 +149,10 @@ fn hello_for(app: &AppHandle) -> Value {
     let st = app.state::<Arc<AppState>>();
     let i = st.inner.lock().unwrap();
     let c = &i.config;
-    net::hello_payload(&c.id, &c.secret, &c.name, &c.character, &i.worn(), i.skin.as_ref(), c.count, c.inv.to_json())
+    let mut msg=net::hello_payload(&c.id, &c.secret, &c.name, &c.character, &i.worn(), i.skin.as_ref(), c.count, c.inv.to_json());
+    msg["gameEpoch"]=c.game_epoch.clone().into();msg["gameOffset"]=c.game_offset.into();
+    msg["gameReserve"]=c.game_ticket.as_ref().map_or(0,|t|(-t.applied).max(0) as u64).into();
+    msg
 }
 
 fn profile_msg(i: &Inner, with_skin: bool) -> Value {
@@ -235,6 +240,8 @@ async fn init(state: St<'_>) -> Result<Value, ()> {
         "steam": state.steam.status(false),
         "players": i.players,
         "boss": i.boss,
+        "game": i.game,
+        "gamesSupported": i.games_supported,
         "skins": i.skins,
         "decos": decos::catalogue(),
         "decoState": i.deco_state(),
@@ -307,6 +314,12 @@ async fn do_host(app: &AppHandle, state: &AppState, port: u16, password: String)
 }
 
 async fn do_join(app: &AppHandle, state: &AppState, address: String, password: String, room: String) -> Result<(), String> {
+    {
+        let i=state.inner.lock().unwrap();
+        if i.config.game_ticket.is_some() && (i.config.resume!="join" || i.config.join_address!=address.trim() || i.config.join_room!=room.trim()) {
+            return Err("请先退出牌局并完成结算，再切换房间".into());
+        }
+    }
     if let Some(target) = steam::parse_target(&address) {
         stop_server(state).await;
         let (local_port, steam_addr) = state.steam.start_join(target).await?;
@@ -358,6 +371,7 @@ async fn resume_last_session(app: AppHandle) {
 
 #[tauri::command]
 async fn host(app: AppHandle, state: St<'_>, port: f64, password: String) -> Result<Value, ()> {
+    if state.inner.lock().unwrap().config.game_ticket.is_some(){return Ok(json!({"ok":false,"error":"请先退出牌局并完成结算，再切换房间"}));}
     if !(port.is_finite() && (1024.0..=65535.0).contains(&port)) {
         return Ok(json!({ "ok": false, "error": "端口范围 1024-65535" }));
     }
@@ -369,6 +383,7 @@ async fn host(app: AppHandle, state: St<'_>, port: f64, password: String) -> Res
 
 #[tauri::command]
 async fn join(app: AppHandle, state: St<'_>, address: String, password: String, room: String) -> Result<Value, ()> {
+    if state.inner.lock().unwrap().config.game_ticket.is_some(){return Ok(json!({"ok":false,"error":"请先退出牌局并完成结算，再切换房间"}));}
     Ok(match do_join(&app, &state, address, password, room).await {
         Ok(()) => {
             let join_addr = state.inner.lock().unwrap().config.join_address.clone();
@@ -397,6 +412,7 @@ fn steam_invite(state: St<'_>) -> Value {
 
 #[tauri::command]
 async fn leave(app: AppHandle, state: St<'_>) -> Result<Value, ()> {
+    if state.inner.lock().unwrap().config.game_ticket.is_some(){return Ok(json!({"ok":false,"error":"请先在小游戏中退出牌局，等待门票或奖金结算"}));}
     state.net.disconnect();
     stop_server(&state).await;
     {
@@ -410,6 +426,33 @@ async fn leave(app: AppHandle, state: St<'_>) -> Result<Value, ()> {
     let _ = app.emit("players", Vec::<Value>::new());
     let _ = app.emit("boss", Value::Null);
     Ok(json!({ "ok": true, "server": server_status(&state).await }))
+}
+
+#[tauri::command]
+fn game_command(app:AppHandle,state:St<'_>,mut action:Value)->Value {
+    if !action.is_object(){return json!({"ok":false,"error":"无效操作"});}
+    let op=action["op"].as_str().unwrap_or("").to_string();
+    if !["join","start","leave","hit","stand","fold","check","call","raise","allin","bid","pass","play","sync"].contains(&op.as_str()) {
+        return json!({"ok":false,"error":"未知操作"});
+    }
+    let mut i=state.inner.lock().unwrap();
+    if state.net.state()!="online" || !i.games_supported{return json!({"ok":false,"error":"需要连接支持小游戏的新版房间"});}
+    action["t"]="game".into();action["epoch"]=i.config.game_epoch.clone().into();
+    if op=="join" {
+        if config::save_disabled(){return json!({"ok":false,"error":"存档不可写，暂时不能报名"});}
+        let kind=action["kind"].as_str().unwrap_or("").to_string();
+        if !["blackjack","holdem","ddz"].contains(&kind.as_str()){return json!({"ok":false,"error":"未知游戏"});}
+        let ticket=match i.config.reserve_game(&kind){Ok(t)=>t,Err(e)=>return json!({"ok":false,"error":e})};
+        action["ticket"]=ticket.into();action["count"]=i.config.count.saturating_add(500).into();
+        action["gameEpoch"]=i.config.game_epoch.clone().into();action["gameOffset"]=(i.config.game_offset+500).into();
+        config::save(&i.config);i.status_soon();
+    }
+    if !state.net.send(&action) {
+        if op=="join" {i.config.game_receipt(&json!({"ticket":action["ticket"],"net":0,"final":true}));config::save(&i.config);}
+        return json!({"ok":false,"error":"连接已断开，请重试","wallet":i.wallet()});
+    }
+    let wallet=i.wallet();drop(i);let _=app.emit("wallet",&wallet);
+    json!({"ok":true,"wallet":wallet})
 }
 
 #[tauri::command]
@@ -832,6 +875,8 @@ fn on_net_event(app: &AppHandle, ev: NetEvent) {
             // A throw whose result never arrived (connection dropped) gives the item back.
             if s != "online" {
                 refund_pending(app, &state);
+                state.inner.lock().unwrap().games_supported=false;
+                let _=app.emit("games-online",false);
             }
             let _ = app.emit("net-status", json!({ "state": s, "text": text }));
         }
@@ -845,6 +890,18 @@ fn on_net_event(app: &AppHandle, ev: NetEvent) {
                 i.last_status.clear(); // resend our status
                 i.blocks_seen = 0; // counted per connection
                 i.server_items = items.clone();
+                i.games_supported=msg["games"].as_bool()==Some(true);
+                if !i.games_supported {i.config.game_new_epoch("");i.game=Value::Null;config::save(&i.config);}
+                if let Some(epoch)=msg["gameEpoch"].as_str().filter(|s|s.len()==32) {
+                    i.config.game_new_epoch(epoch);
+                    config::save(&i.config);
+                    if let Some(ticket)=&i.config.game_ticket {
+                        state.net.send(&json!({"t":"game","op":"join","epoch":epoch,"ticket":ticket.ticket,"kind":ticket.kind,
+                            "count":i.config.count.saturating_add(500),"gameEpoch":epoch,"gameOffset":i.config.game_offset+500}));
+                    }
+                }
+                let _=app.emit("wallet",i.wallet());
+                let _=app.emit("games-online",i.games_supported);
             }
             let _ = app.emit("server-items", items);
         }
@@ -870,6 +927,24 @@ fn on_net_event(app: &AppHandle, ev: NetEvent) {
             let _ = app.emit("boss", boss);
         }
         NetEvent::BossDown(msg) => on_boss_down(app, &state, &msg),
+        NetEvent::Game(msg) => {
+            let mut i=state.inner.lock().unwrap();
+            if msg["t"]=="gameError" {
+                if let Some(ticket)=msg["ticket"].as_str() {
+                    i.config.game_receipt(&json!({"ticket":ticket,"net":0,"final":true}));
+                    config::save(&i.config);i.status_soon();
+                    let _=app.emit("wallet",i.wallet());
+                }
+                let text:String=msg["text"].as_str().unwrap_or("牌桌操作失败").chars().take(80).collect();
+                let _=app.emit("toast",&text);let _=app.emit("game-error",text);
+                return;
+            }
+            if msg["epoch"].as_str()!=Some(&i.config.game_epoch){return;}
+            if i.config.game_receipt(&msg["receipt"]) {
+                config::save(&i.config);i.status_soon();let _=app.emit("wallet",i.wallet());
+            }
+            i.game=msg.clone();let _=app.emit("games",msg);
+        }
         NetEvent::Skin(msg) => {
             let Some(id) = msg["id"].as_str().map(|s| s.chars().take(64).collect::<String>()) else { return };
             let skin = clean_skin(&msg["skin"]);
@@ -1259,7 +1334,7 @@ async fn tick_loop(app: AppHandle) {
             let status = (i.last_status_at.elapsed() >= STATUS_EVERY).then(|| {
                 let chest = decos::chest_ready(i.config.last_chest_ms, now, i.config.count);
                 let (inv, blocks) = (i.config.inv.to_json(), i.blocks_seen);
-                json!({ "t": "status", "count": i.config.count, "typing": typing, "inv": inv, "blocks": blocks, "chest": chest, "dnd": i.config.dnd })
+                json!({ "t": "status", "count": i.config.count, "typing": typing, "inv": inv, "blocks": blocks, "chest": chest, "dnd": i.config.dnd,"gameEpoch":i.config.game_epoch,"gameOffset":i.config.game_offset })
             });
             if i.dirty && i.last_save.elapsed() >= SAVE_EVERY {
                 // Throttled rather than debounced, so continuous typing still saves.
@@ -1342,6 +1417,8 @@ fn main() {
             throw_seq: 0,
             server_items: ITEM_IDS.to_vec(),
             boss: Value::Null,
+            game: Value::Null,
+            games_supported: false,
             blocks_seen: 0,
             splat_times: VecDeque::new(),
             splats_sent: 0,
@@ -1374,6 +1451,7 @@ fn main() {
             init, set_profile, set_skin, clear_skin, host, join, leave,
             steam_status, steam_rooms, steam_invite,
             buy, throw_item, open_chest, open_boss_chest, merge_decos, fill_merge, equip_deco,
+            game_command,
             check_for_update, apply_update, hit_rects, overlay_idle, set_dnd, quit
         ])
         .setup(move |app| {

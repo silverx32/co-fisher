@@ -91,6 +91,54 @@ pub struct Config {
     pub daily: BTreeMap<String, u64>,
     /// Bosses I landed the last hit on, per local day (days without any are left out).
     pub daily_last_hits: BTreeMap<String, u64>,
+    pub game_epoch: String,
+    pub game_offset: i64,
+    pub game_offsets: BTreeMap<String,i64>,
+    pub game_ticket: Option<GameTicket>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all="camelCase")]
+pub struct GameTicket {
+    pub ticket: String,
+    pub kind: String,
+    pub epoch: String,
+    pub applied: i64,
+}
+
+impl Config {
+    pub fn reserve_game(&mut self,kind:&str)->Result<String,&'static str> {
+        if self.game_ticket.is_some() {return Err("已有报名或牌局尚未结算，请先恢复连接");}
+        if self.count<500 {return Err("报名需要 500 点");}
+        let ticket=random_hex(16);
+        self.count-=500;self.game_offset-=500;
+        self.game_ticket=Some(GameTicket{ticket:ticket.clone(),kind:kind.into(),epoch:self.game_epoch.clone(),applied:-500});
+        Ok(ticket)
+    }
+    pub fn game_receipt(&mut self,receipt:&Value)->bool {
+        let Some(ticket)=self.game_ticket.as_mut() else{return false};
+        if receipt["ticket"].as_str()!=Some(&ticket.ticket) {return false;}
+        let Some(net)=receipt["net"].as_i64().filter(|n|(-500..=5900).contains(n)) else{return false};
+        let final_=receipt["final"].as_bool()==Some(true);
+        if !final_ && net != -500 {return false;}
+        if !final_ && net==ticket.applied {return false;}
+        let delta=net-ticket.applied;
+        self.count=(self.count as i128+delta as i128).clamp(0,u64::MAX as i128) as u64;
+        self.game_offset+=delta;ticket.applied=net;
+        if final_ {self.game_ticket=None;}
+        true
+    }
+    /// A fresh server/room cancels its previous unfinished table. The local
+    /// escrow is returned once; already-final settlements are never rolled back.
+    pub fn game_new_epoch(&mut self,epoch:&str)->bool {
+        if self.game_epoch==epoch{return false;}
+        if let Some(t)=self.game_ticket.take() {
+            self.count=(self.count as i128-t.applied as i128).clamp(0,u64::MAX as i128) as u64;
+            self.game_offset-=t.applied;
+        }
+        if !self.game_epoch.is_empty(){self.game_offsets.insert(self.game_epoch.clone(),self.game_offset);}
+        self.game_epoch=epoch.into();self.game_offset=self.game_offsets.get(epoch).copied().unwrap_or(0);true
+    }
 }
 
 fn null_as_default<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(d: D) -> Result<T, D::Error> {
@@ -214,6 +262,28 @@ pub fn save_skin(skin: Option<&Value>) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    #[test]
+    fn game_ticket_settlement_is_exactly_once_and_survives_reload() {
+        let mut c=Config {count:2000,game_epoch:"room-a".into(),..Config::default()};
+        let ticket=c.reserve_game("ddz").unwrap();assert_eq!(c.count,1500);
+        assert!(c.reserve_game("ddz").is_err());
+        let serialized=serde_json::to_string(&c).unwrap();let mut c:Config=serde_json::from_str(&serialized).unwrap();
+        let paid=json!({"ticket":ticket,"net":-500,"final":false});c.game_receipt(&paid);c.game_receipt(&paid);assert_eq!(c.count,1500);
+        let won=json!({"ticket":ticket,"net":100,"final":true});c.game_receipt(&won);c.game_receipt(&won);assert_eq!(c.count,2100);assert_eq!(c.game_offset,100);
+        c.game_new_epoch("room-b");assert_eq!(c.count,2100);
+    }
+    #[test]
+    fn fresh_room_refunds_unfinished_entry_once() {
+        let mut c=Config{count:1000,game_epoch:"old".into(),..Config::default()};c.reserve_game("blackjack").unwrap();
+        c.game_new_epoch("new");c.game_new_epoch("new");assert_eq!(c.count,1000);assert_eq!(c.game_offset,0);assert!(c.game_ticket.is_none());
+    }
+    #[test]
+    fn returning_to_another_room_keeps_its_wallet_offset() {
+        let mut c=Config{count:2000,game_epoch:"a".into(),..Config::default()};let ticket=c.reserve_game("ddz").unwrap();
+        c.game_receipt(&json!({"ticket":ticket,"net":100,"final":true}));c.game_new_epoch("b");
+        assert_eq!(c.game_offset,0);c.game_new_epoch("a");assert_eq!(c.game_offset,100);assert_eq!(c.count,2100);
+    }
     #[test]
     fn inventory_follows_item_ids() {
         let ids: Vec<String> = super::Inv::default().to_json().as_object().unwrap().keys().cloned().collect();

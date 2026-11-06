@@ -13,6 +13,7 @@
     host: ({ port, password }) => invoke('host', { port: Number(port) || 0, password: password || '' }),
     join: ({ address, password, room }) => invoke('join', { address: address || '', password: password || '', room: room || '' }),
     leave: () => invoke('leave'),
+    gameCommand: (action) => invoke('game_command', { action }),
     steamStatus: (retry = false) => invoke('steam_status', { retry }),
     steamRooms: () => invoke('steam_rooms'),
     steamInvite: () => invoke('steam_invite'),

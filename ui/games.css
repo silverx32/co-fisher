@@ -1,0 +1,52 @@
+/* A compact felt table living inside the existing desktop pet window. */
+#panel.games-panel { width: min(752px, calc(100vw - 16px)); max-height: calc(100vh - 244px); position: absolute; right: 6px; bottom: 230px; background: #f7f4ec; padding: 8px 12px 12px; border: 1px solid #d6d2bf; }
+.games-panel .tabs { background: #f7f4ec; }
+.tabs button { white-space: nowrap; padding-left: 5px; padding-right: 5px; }
+#gamesRoot { --felt: #174a40; --gold: #ead6a0; color: #213e37; }
+.game-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.game-head h3 { margin: 3px 0; font-family: "STZhongsong", "SimSun", serif; font-size: 22px; font-weight: normal; letter-spacing: 2px; }
+.game-head small { color: #68756a; }
+.game-head button { border-color: #bfcabf; color: #345346; background: transparent; }
+.game-rule { color: #72776b; font-size: 11px; line-height: 1.6; margin: 5px 0 8px; }
+.game-choices { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin: 10px 0; }
+.game-choice { padding: 13px 10px; text-align: left; border: 1px solid #d4d8c8; background: #fffef8; border-radius: 10px; color: #214d40; }
+.game-choice.active { border-color: #2c725d; box-shadow: inset 0 0 0 1px #2c725d; background: #e9f0df; }
+.game-choice b { display: block; font-size: 16px; margin: 4px 0; }
+.game-choice span { color: #78816f; font-size: 11px; }
+.game-felt { background: var(--felt); border-radius: 14px; padding: 12px; color: #f5f1dc; border: 3px solid #c5b786; box-shadow: inset 0 0 0 1px #37675a; }
+.game-topline { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; }
+.game-topline b { color: var(--gold); font-size: 16px; }
+.game-timer { display: inline-block; color: #ead6a0; font-variant-numeric: tabular-nums; }
+.game-timer.urgent { color: #ffbe9c; }
+.game-seats { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; }
+.game-seat { border: 1px solid #467365; border-radius: 8px; padding: 6px 8px; background: #1b5145; min-width: 0; }
+.game-seat.turn { border-color: #f4d688; background: #285e4c; }
+.game-seat.out { opacity: .55; }
+.game-seat .seat-name { display: flex; justify-content: space-between; gap: 5px; }
+.game-seat .seat-name b { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.game-seat small { font-size: 10px; color: #bdcfbb; }
+.game-seat p { margin: 3px 0 0; font-size: 11px; color: #e1dabd; }
+.game-board { display: flex; align-items: center; flex-wrap: wrap; min-height: 28px; gap: 5px; justify-content: center; margin: 10px 0; }
+.game-board > small { color: #bdd0bc; margin-right: 6px; }
+.playing-card { width: 30px; min-width: 30px; height: 44px; padding: 3px 2px; background: #fffdf2; color: #263a35; border: 1px solid #d3d0b9; border-radius: 5px; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1; font: bold 14px/1.1 Georgia,"SimSun",serif; box-shadow: 0 2px 2px #092d2533; }
+.playing-card.red { color: #b94239; }
+.playing-card.joker { font-size: 10px; }
+button.playing-card:hover { background: #f1e6c2; }
+button.playing-card.selected { transform: translateY(-7px); background: #f5df9c; border-color: #e4bc50; }
+.playing-card.back { background: repeating-linear-gradient(45deg,#4b796e 0 3px,#38665b 3px 6px); color: #c2d5c5; }
+.game-hand { display: flex; flex-wrap: wrap; gap: 3px; padding: 10px 0 4px; min-height: 51px; }
+.game-hand-label { margin-top: 8px; display: flex; justify-content: space-between; color: #e4d7b3; font-size: 11px; }
+.game-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.game-actions button { background: #f5efdc; border-color: #ded3ad; color: #274c3c; font-weight: bold; }
+.game-actions button.primary { background: #e8cc7e; color: #393b21; border-color: #e8cc7e; }
+.game-actions button.surrender { margin-left: auto; font-weight: normal; background: transparent; border-color: #648274; color: #d9dfcc; }
+.game-actions input { width: 94px; height: 28px; background: #fffdf4; }
+.game-note { margin: 8px 0 0; font-size: 12px; color: #e5dab4; line-height: 1.5; }
+.game-message { min-height: 16px; color: #9c4d32; font-size: 11px; margin-top: 6px; }
+.game-winners { padding: 8px; border: 1px solid #aa995c; border-radius: 7px; margin-top: 8px; color: #ffe7a2; text-align: center; }
+.game-empty { border: 1px dashed #c2cbb9; border-radius: 9px; padding: 18px 12px; text-align: center; color: #72806a; }
+.game-folded { padding: 12px; border: 1px dashed #b3bea8; border-radius: 9px; color: #63765f; margin-top: 8px; }
+#gameDock { position: absolute; right: 154px; bottom: 9px; z-index: 7; max-width: 260px; background: #194b40; border: 1px solid #c5b786; color: #f1e4b9; border-radius: 20px; font-size: 11px; padding: 6px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#gameDock.my-turn { animation: game-beckon 1.2s ease-in-out infinite alternate; }
+@keyframes game-beckon { to { box-shadow: 0 0 0 3px #e7c97066; } }
+@media (prefers-reduced-motion: reduce) { #gameDock.my-turn { animation: none; } }

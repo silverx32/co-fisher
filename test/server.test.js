@@ -63,6 +63,87 @@ function client(port, hello) {
 
 const id = (n) => `player-${String(n).padStart(4, '0')}`;
 
+const gameState = (c) => c.inbox.filter(m => m.t === 'gameState').at(-1);
+function gameCommand(c, op, extra = {}) {
+  const state = gameState(c);
+  c.send({ t: 'game', op, epoch: state.epoch, revision: state.revision, ...extra });
+}
+
+test('games: entry is idempotent, only first entrant starts, hands stay private and payout is 80%', () => withServer([], async (port) => {
+  const clients = [31,32,33,34].map(n => client(port,{id:id(n),name:`P${n}`,count:2000}));
+  try {
+    await Promise.all(clients.map(c => c.wait(m => m.t === 'gameState')));
+    for (let i=0;i<3;i++) {
+      gameCommand(clients[i],'join',{kind:'holdem',ticket:String(i+1).padStart(32,'0'),count:2000});
+      await clients[i].wait(m => m.t === 'gameState' && m.table?.seats.length === i+1);
+    }
+    gameCommand(clients[0],'join',{kind:'holdem',ticket:'1'.padStart(32,'0'),count:2000});
+    gameCommand(clients[1],'start');
+    assert.match((await clients[1].wait(m=>m.t==='gameError')).text,/第一位/);
+    gameCommand(clients[0],'start');
+    await Promise.all(clients.map(c=>c.wait(m=>m.t==='gameState' && m.table?.phase==='preflop')));
+    for(let i=0;i<4;i++) {
+      const s=gameState(clients[i]);
+      assert.equal(s.table.prize,1200);
+      assert.equal(s.table.seats.length,3);
+      for(const seat of s.table.seats) assert.equal(Array.isArray(seat.cards),seat.id===id(31+i));
+    }
+    // Both opponents explicitly surrender; only the champion receives 1,200.
+    gameCommand(clients[1],'leave');
+    await clients[1].wait(m=>m.t==='gameState' && m.table?.seats[1]?.left);
+    gameCommand(clients[2],'leave');
+    const won=await clients[0].wait(m=>m.t==='gameState' && m.table?.phase==='finished');
+    assert.deepEqual(won.table.winners,[id(31)]);
+    assert.equal(won.receipt.net,700);
+    assert.equal(won.receipt.final,true);
+    assert.equal(gameState(clients[1]).receipt.net,-500);
+    // Winnings and pre-receipt status updates cannot damage the typing boss.
+    const before=clients[0].inbox.filter(m=>m.t==='state').at(-1)?.boss.hp;
+    clients[0].send({t:'status',count:2700,gameEpoch:won.epoch,gameOffset:700,inv:{}});
+    const roster=await clients[0].wait(m=>m.t==='state' && m.players.some(p=>p.id===id(31)&&p.count===2700));
+    if(before!=null) assert.equal(roster.boss.hp,before);
+  } finally {for(const c of clients)c.ws.close();}
+}));
+
+test('games: waiting entry refunds, host transfers and reconnect restores seat and hand', () => withServer([],async(port)=>{
+  const a=client(port,{id:id(41),count:1000}), b=client(port,{id:id(42),count:1000}), c=client(port,{id:id(43),count:1000});
+  let reconnected;
+  try {
+    await Promise.all([a,b,c].map(c=>c.wait(m=>m.t==='gameState')));
+    for(const [index,p] of [a,b,c].entries()) {gameCommand(p,'join',{kind:'ddz',ticket:String(index+11).padStart(32,'0'),count:1000});await p.wait(m=>m.t==='gameState'&&m.table?.seats.length===index+1);}
+    gameCommand(a,'leave');const refund=await a.wait(m=>m.t==='gameState'&&m.receipt?.final);
+    assert.equal(refund.receipt.net,0);assert.equal(refund.table.host,id(42));
+    // Use a new ticket to re-enter; former host is now last in the queue.
+    gameCommand(a,'join',{kind:'ddz',ticket:'99'.padStart(32,'0'),count:1000,gameEpoch:refund.epoch,gameOffset:0});
+    await b.wait(m=>m.t==='gameState'&&m.table?.seats.length===3&&m.table.seats[0].id===id(42));
+    gameCommand(b,'start');await b.wait(m=>m.t==='gameState'&&m.table?.phase==='bid');
+    const prior=gameState(b);const hand=prior.table.seats[0].cards;
+    b.ws.close();await b.closed;
+    reconnected=client(port,{id:id(42),count:500,gameEpoch:prior.epoch,gameOffset:-500});
+    const resumed=await reconnected.wait(m=>m.t==='gameState'&&m.table?.phase==='bid');
+    assert.deepEqual(resumed.table.seats[0].cards,hand);assert.equal(resumed.table.seats.length,3);assert.equal(resumed.receipt.net,-500);
+  } finally {a.ws.close();b.ws.close();c.ws.close();reconnected?.ws.close();}
+}));
+
+test('games: offline winner receives one settlement without reconnect growth clamping',()=>withServer([],async(port)=>{
+  const clients=[51,52,53].map(n=>client(port,{id:id(n),count:2000}));let returned;
+  try{
+    await Promise.all(clients.map(c=>c.wait(m=>m.t==='gameState')));
+    for(let i=0;i<3;i++){gameCommand(clients[i],'join',{kind:'blackjack',ticket:String(i+51).padStart(32,'0'),count:2000});await clients[i].wait(m=>m.t==='gameState'&&m.table?.seats.length===i+1);}
+    gameCommand(clients[0],'start');await clients[0].wait(m=>m.t==='gameState'&&m.table?.phase==='blackjack');
+    const epoch=gameState(clients[0]).epoch;clients[0].ws.close();await clients[0].closed;
+    gameCommand(clients[1],'leave');await clients[1].wait(m=>m.t==='gameState'&&m.table?.seats[1]?.left);
+    gameCommand(clients[2],'leave');await clients[2].wait(m=>m.t==='gameState'&&m.table?.phase==='finished');
+    returned=client(port,{id:id(51),count:1500,gameEpoch:epoch,gameOffset:-500});
+    const result=await returned.wait(m=>m.t==='gameState'&&m.table?.phase==='finished');assert.equal(result.receipt.net,700);
+    const roster=await returned.wait(m=>m.t==='state'&&m.players.some(p=>p.id===id(51)&&p.count===2700));assert.equal(roster.players.find(p=>p.id===id(51)).count,2700);
+    // Malformed signed offsets must never panic the relay.
+    const seen=returned.inbox.length;
+    returned.ws.send(`{"t":"status","count":2700,"gameEpoch":${JSON.stringify(epoch)},"gameOffset":-9223372036854775808,"inv":{}}`);
+    gameCommand(returned,'sync');await returned.wait(m=>returned.inbox.indexOf(m)>=seen&&m.t==='gameState'&&m.receipt?.net===700);
+  }finally{for(const c of clients)c.ws.close();returned?.ws.close();}
+}));
+
 test('joins, sees roster and status updates', () => withServer([], async (port) => {
   const a = client(port, { id: id(1), name: 'A' });
   await a.wait((m) => m.t === 'welcome');

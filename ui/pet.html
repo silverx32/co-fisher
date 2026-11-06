@@ -4,12 +4,14 @@
 <meta charset="utf-8">
 <title>摸鱼搭子</title>
 <link rel="stylesheet" href="pet.css">
+<link rel="stylesheet" href="games.css">
 </head>
 <body>
 <div id="root">
   <div id="panel" class="hit hidden">
     <div class="tabs">
       <button data-tab="room" class="active">房间</button>
+      <button data-tab="games">小游戏</button>
       <button data-tab="chars">角色</button>
       <button data-tab="shop">道具</button>
       <button data-tab="decos">装扮</button>
@@ -67,6 +69,10 @@
         <button id="updApplyBtn" class="primary hidden">更新并重启</button>
       </div>
       <button id="quitBtn" class="link">退出程序</button>
+    </section>
+
+    <section data-pane="games" class="hidden">
+      <div id="gamesRoot"></div>
     </section>
 
     <section data-pane="chars" class="hidden">
@@ -164,8 +170,10 @@
   </div>
 
   <div id="toast" class="hidden"></div>
+  <button id="gameDock" class="hit hidden" title="展开牌桌，收起不会结束牌局"></button>
 </div>
 <script src="api.js"></script>
 <script src="pet.js"></script>
+<script src="games.js"></script>
 </body>
 </html>

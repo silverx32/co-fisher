@@ -20,6 +20,9 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Message;
 
+mod cards;
+mod games;
+
 pub const PROTOCOL_VERSION: u64 = 2;
 pub const DEFAULT_PORT: u16 = 23333;
 pub const MAX_PLAYERS: usize = 16;
@@ -176,6 +179,7 @@ struct Known {
     secret_hash: [u8; 32],
     count: u64,
     at: Instant,
+    game_offset: i64,
 }
 
 struct Player {
@@ -283,6 +287,7 @@ struct Room {
     /// recreate the room and claim someone else's id.
     emptied_at: Option<Instant>,
     boss: Boss,
+    games: games::Games,
 }
 
 #[derive(Default)]
@@ -327,6 +332,19 @@ fn close_msg(code: u16, reason: &str) -> Message {
 }
 
 impl Room {
+    fn game_snapshots(&self) {
+        for (id,p) in &self.players { push(&p.tx,&p.kill,&self.games.snapshot(id)); }
+    }
+
+    fn game_tick(&mut self) {
+        let before: Vec<(String,i64)> = self.players.keys().map(|id|(id.clone(),self.games.offset(id))).collect();
+        let revision=self.games.revision;
+        self.games.tick();
+        if self.games.revision!=revision {
+            for (id,offset) in before { if let Some(p)=self.players.get_mut(&id) {p.count=adjust_game_count(p.count,self.games.offset(&id)-offset);} }
+            self.game_snapshots();self.dirty=true;
+        }
+    }
     fn broadcast(&self, msg: &Value) {
         // Serialized once; cloning the message only bumps a reference count.
         let m = Message::text(msg.to_string());
@@ -464,6 +482,15 @@ fn clamp_count(v: &Value) -> u64 {
     clamp_num(v, 1e9)
 }
 
+fn adjust_game_count(count:u64,delta:i64)->u64 { (count as i128+delta as i128).clamp(0,1_000_000_000) as u64 }
+
+fn reported_game_count(games:&games::Games,id:&str,msg:&Value)->u64 {
+    let count=clamp_count(&msg["count"]);
+    if msg["gameEpoch"].as_str()==Some(&games.epoch) {
+        adjust_game_count(count,games.offset(id).saturating_sub(msg["gameOffset"].as_i64().unwrap_or(0)))
+    } else {count}
+}
+
 fn clean_room(v: &Value) -> String {
     let s: String = v.as_str().unwrap_or("").chars().filter(|c| !c.is_control()).collect();
     s.trim().chars().take(ROOM_CODE_MAX).collect()
@@ -547,6 +574,7 @@ fn flush(shared: &Shared, prune: bool) {
     let now = Instant::now();
     let mut st = shared.state.lock().unwrap();
     for room in st.rooms.values_mut() {
+        room.game_tick();
         room.spawn_boss_if_due(shared.opts.boss_hp, now);
         if room.dirty {
             room.dirty = false;
@@ -746,11 +774,14 @@ fn on_hello(
         old.kill.notify_one();
     }
 
-    let mut count = clamp_count(&msg["count"]);
+    let mut count = reported_game_count(&room.games,&id,msg);
+    if msg["gameEpoch"].as_str()!=Some(&room.games.epoch) {
+        count=count.saturating_add(msg["gameReserve"].as_u64().unwrap_or(0).min(games::ENTRY));
+    }
     match room.known.get_mut(&id) {
-        Some(k) => count = count.min(k.count + growth_allowance(k.at)),
+        Some(k) => count = count.min(adjust_game_count(k.count,room.games.offset(&id).saturating_sub(k.game_offset)).saturating_add(growth_allowance(k.at))),
         None => {
-            room.known.insert(id.clone(), Known { secret_hash, count, at: now });
+            room.known.insert(id.clone(), Known { secret_hash, count, at: now, game_offset:room.games.offset(&id) });
         }
     }
     let skin = clean_skin(&msg["skin"]);
@@ -778,7 +809,7 @@ fn on_hello(
     };
 
     // "items": what this server supports (v2.2 servers don't send it).
-    push(tx, kill, &json!({ "t": "welcome", "you": id, "max": MAX_PLAYERS, "items": ITEM_IDS }));
+    push(tx, kill, &json!({ "t": "welcome", "you": id, "max": MAX_PLAYERS, "items": ITEM_IDS, "games":true,"gameEpoch":room.games.epoch }));
     // Everyone's custom skins to the newcomer, and the newcomer's to everyone.
     for (oid, other) in &room.players {
         if let Some(s) = &other.skin {
@@ -788,6 +819,7 @@ fn on_hello(
     let name = p.name.clone();
     let skin_msg = p.skin.as_ref().map(|s| json!({ "t": "skin", "id": id, "rev": p.skin_rev, "skin": s }));
     room.players.insert(id.clone(), p);
+    push(tx,kill,&room.games.snapshot(&id));
     room.boss.crowd(room.players.len(), opts.boss_hp);
     if let Some(m) = skin_msg {
         room.broadcast(&m);
@@ -806,9 +838,18 @@ fn on_message(shared: &Shared, conn: u64, code: &str, id: &str, msg: &Value) {
         return; // replaced by a newer connection
     }
     match msg["t"].as_str() {
+        Some("game") => {
+            let before:Vec<(String,i64)>=room.players.keys().map(|id|(id.clone(),room.games.offset(id))).collect();
+            let p=&room.players[id];
+            let balance=if msg["op"]=="join" { p.count.min(reported_game_count(&room.games,id,msg)) } else {p.count};
+            let result=room.games.command(id,&p.name,msg,balance);
+            for (pid,offset) in before {if let Some(p)=room.players.get_mut(&pid){p.count=adjust_game_count(p.count,room.games.offset(&pid)-offset);}}
+            if let Err(text)=result {let p=&room.players[id];push(&p.tx,&p.kill,&json!({"t":"gameError","text":text,"ticket":msg["ticket"]}));}
+            room.game_snapshots();room.dirty=true;
+        }
         Some("status") => {
+            let next = reported_game_count(&room.games,id,msg);
             let p = room.players.get_mut(id).unwrap();
-            let next = clamp_count(&msg["count"]);
             // The count may only grow as fast as a human types (spending lowers it freely):
             // a budget refills at typing speed and each increase spends from it.
             let now = Instant::now();
@@ -933,6 +974,7 @@ fn on_close(shared: &Shared, conn: u64, code: &str, id: &str) {
     if let Some(k) = room.known.get_mut(id) {
         k.count = p.count;
         k.at = Instant::now();
+        k.game_offset = room.games.offset(id);
     }
     if room.players.is_empty() {
         room.emptied_at = Some(Instant::now());
