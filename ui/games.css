@@ -108,6 +108,23 @@ button.xq-piece { cursor: pointer; }
 .xq-piece.target { outline: 2px solid #2f9d6a; }
 .xq-piece.spot.target { outline: none; }
 .xq-piece.spot.target::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: #2f9d6a; }
+/* Board marks (象棋 / 飞行棋 / 大富翁): fade in while growing and dropping onto the point,
+   bob, fade out after 2 s. --age (set by games.js) resumes the animations when the board is
+   rebuilt. They live in .mark-host, above the board, so its clipped edges never cut them. */
+.mark-host { position: relative; flex: none; }
+.mark-host.markable { cursor: crosshair; }
+.mark-host.markable .mp-center { cursor: default; }
+.board-mark { position: absolute; z-index: 3; width: 0; height: 0; pointer-events: none;
+  animation: board-mark-in .3s ease-out both, board-mark-out .45s ease-in 2s forwards; animation-delay: calc(0s - var(--age, 0s)), calc(2s - var(--age, 0s)); }
+.board-mark-body { position: absolute; left: 0; bottom: 3px; translate: -50% 0; display: flex; flex-direction: column; align-items: center; gap: 1px; transform-origin: 50% 100%;
+  animation: board-mark-drop .45s cubic-bezier(.3,1.5,.5,1) both, board-mark-bob .8s ease-in-out .45s infinite alternate; animation-delay: calc(0s - var(--age, 0s)), calc(.45s - var(--age, 0s)); }
+.board-mark-name { max-width: 76px; padding: 0 6px; border-radius: 8px; background: var(--mark); color: #fff; font: bold 10px/15px "Microsoft YaHei UI", sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 1px 3px #0005; }
+.board-mark-pin { width: 13px; height: 13px; border-radius: 50% 50% 50% 0; rotate: -45deg; background: var(--mark); border: 2px solid #fff; box-shadow: -1px 1px 3px #0005; }
+@keyframes board-mark-in { from { opacity: 0; } }
+@keyframes board-mark-out { to { opacity: 0; } }
+@keyframes board-mark-drop { from { transform: translateY(-26px) scale(.3); } }
+@keyframes board-mark-bob { to { transform: translateY(-4px); } }
+@media (prefers-reduced-motion: reduce) { .board-mark-body { animation: none; } }
 .mp-characters { flex: none; width: 400px; display: grid; grid-template-columns: repeat(4,1fr); gap: 6px; }
 .mp-character { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 7px 7px 6px; text-align: left; border-radius: 9px; background: #fffef8; border-color: #d4d8c8; color: #214d40; min-height: 108px; }
 .mp-character .mp-emoji { font-size: 22px; line-height: 1; }

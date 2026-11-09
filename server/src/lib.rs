@@ -844,6 +844,14 @@ fn on_message(shared: &Shared, conn: u64, code: &str, id: &str, msg: &Value) {
         return; // replaced by a newer connection
     }
     match msg["t"].as_str() {
+        Some("game") if msg["op"] == "mark" => {
+            let p = &room.players[id];
+            match room.games.mark(id, &p.name.clone(), msg) {
+                Ok(Some(mark)) => room.broadcast(&mark),
+                Ok(None) => {}
+                Err(text) => push(&p.tx, &p.kill, &json!({"t":"gameError","text":text})),
+            }
+        }
         Some("game") => {
             let before:Vec<(String,i64)>=room.players.keys().map(|id|(id.clone(),room.games.offset(id))).collect();
             let p=&room.players[id];

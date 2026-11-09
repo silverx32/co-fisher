@@ -145,6 +145,7 @@
       root.append(node('p', 'game-rule', about[chosen][2]));
     }
     if (t) renderTable(t);
+    for (const m of marks) showMark(m);
     root.append(node('div', 'game-message', message)); updateDock();
     if (t) reveal(t);
   }
@@ -235,11 +236,82 @@
     side.append(seats); wrap.append(side); table.append(wrap);
     return { table, wrap, side };
   }
+  // ---------------------------------------------------------------- board marks
+  // Name-tagged pins dropped on the 象棋 / 飞行棋 / 大富翁 boards; everyone viewing the table
+  // draws them. Who may drop them comes from the snapshot (`marks`: 象棋 spectators only).
+  // Each person keeps at most MARK_CAP (a new one drops their oldest); each lasts 2 s plus its fade.
+  const MARK_CAP = 5, MARK_LIFE = 2450;
+  const marks = [];
+  const markHint = '点棋盘放标记，大家都看得到（每人同时最多 5 个）';
+  // FNV-1a, so ids that differ by one character still get clearly different colours.
+  const markHue = id => { let h = 2166136261; for (const ch of id) h = Math.imul(h ^ ch.charCodeAt(0), 16777619); return (h >>> 0) % 360; };
+  const canMark = (t, self) => { const who = state?.marks?.[t.kind]; return online && supported && (who === 'everyone' || (who === 'spectators' && self < 0)); };
+  // Centre of point p in board coordinates: 象棋 intersections, 飞行棋 grid cells, 大富翁 squares.
+  function markSpot(host, p) {
+    const flip = host.classList.contains('flipped'), r = Math.floor(p / 9), c = p % 9;
+    if (host.dataset.kind === 'xiangqi') return p < 90 && [xqAt(flip ? 8 - c : c), xqAt(flip ? 9 - r : r)];
+    if (host.dataset.kind === 'flight') return p < 196 && [FL_PAD + (p % 14 + .5) * FL, FL_PAD + (Math.floor(p / 14) + .5) * FL];
+    const tile = host.querySelector(`.mp-tile[data-tile="${p}"]`);
+    return tile && [tile.offsetLeft + tile.offsetWidth / 2, tile.offsetTop + tile.offsetHeight / 2];
+  }
+  // The point under a click; null off the squares (大富翁's centre panel).
+  function markPoint(host, e) {
+    const box = host.getBoundingClientRect(), x = e.clientX - box.left, y = e.clientY - box.top;
+    const clamp = (v, max) => Math.max(0, Math.min(max, v)), flip = host.classList.contains('flipped');
+    if (host.dataset.kind === 'xiangqi') {
+      const r = clamp(Math.round((y - XQ / 2) / XQ), 9), c = clamp(Math.round((x - XQ / 2) / XQ), 8);
+      return (flip ? 9 - r : r) * 9 + (flip ? 8 - c : c);
+    }
+    if (host.dataset.kind === 'flight') return clamp(Math.floor((y - FL_PAD) / FL), 13) * 14 + clamp(Math.floor((x - FL_PAD) / FL), 13);
+    const tile = e.target.closest('.mp-tile');
+    return tile ? Number(tile.dataset.tile) : null;
+  }
+  function markNode(m, host) {
+    const spot = markSpot(host, m.square);
+    if (!spot) return null;
+    const n = node('div', 'board-mark'), body = node('div', 'board-mark-body');
+    body.append(node('span', 'board-mark-name', m.name), node('span', 'board-mark-pin'));
+    n.append(body);
+    n.dataset.square = m.square;
+    n.style.left = `${spot[0]}px`; n.style.top = `${spot[1]}px`;
+    n.style.setProperty('--mark', `hsl(${markHue(m.by)} 65% 42%)`);
+    // Re-renders rebuild the board: --age resumes the animations where they were.
+    n.style.setProperty('--age', `${((performance.now() - m.born) / 1000).toFixed(3)}s`);
+    m.el = n;
+    return n;
+  }
+  function showMark(m, host = root.querySelector('.mark-host')) {
+    const n = host?.dataset.table === m.tableId && markNode(m, host);
+    if (n) host.append(n);
+  }
+  function dropMark(m) { clearTimeout(m.timer); const i = marks.indexOf(m); if (i >= 0) marks.splice(i, 1); m.el?.remove(); }
+  function addMark(m) {
+    if (!Number.isInteger(m?.square) || m.square < 0 || typeof m.by !== 'string') return;
+    const same = marks.filter(x => x.by === m.by && x.tableId === m.tableId);
+    if (same.length >= MARK_CAP) dropMark(same[0]);
+    const mark = { by: m.by, name: String(m.name ?? ''), square: m.square, tableId: m.tableId, born: performance.now() };
+    marks.push(mark);
+    mark.timer = setTimeout(() => dropMark(mark), MARK_LIFE);
+    showMark(mark);
+  }
+  // Wraps a board so marks float above it (even past its clipped edges) and takes mark clicks.
+  // A click on the player's own controls (a plane to move, a piece) stays a game action.
+  function markHost(board, t, flip, allowed) {
+    const host = node('div', `mark-host${flip ? ' flipped' : ''}${allowed ? ' markable' : ''}`);
+    host.dataset.table = t.id; host.dataset.kind = t.kind;
+    host.append(board);
+    if (allowed) host.onclick = e => {
+      const square = e.target.closest('button') ? null : markPoint(host, e);
+      if (square != null) api.gameCommand({ op: 'mark', tableId: t.id, square }).then(res => { if (!res.ok) { message = res.error || '标记没发出去'; render(); } }, () => {});
+    };
+    return host;
+  }
   // ---------------------------------------------------------------- 飞行棋
   // Geometry mirrors server/src/flight.rs: ring square k sits on the border of a
   // 14×14 grid; each colour's home column runs from its side's middle to the centre.
   const planeColors = ['#e05a47', '#e3b12f', '#3f7fd6', '#3fa36b'], colorNames = ['红', '黄', '蓝', '绿'];
   const hangars = [[2, 10], [10, 10], [10, 2], [2, 2]];
+  const FL = 20, FL_PAD = 2; // cell size and padding of games.css .flight-board
   const ringCell = k => k < 13 ? [0, k] : k < 26 ? [k - 13, 13] : k < 39 ? [13, 13 - (k - 26)] : [13 - (k - 39), 0];
   const ringSquare = (color, step) => (13 * color + 8 + step) % 52;
   function planeCell(color, step, k) {
@@ -274,7 +346,8 @@
       if (go) token.onclick = () => command('move', { plane: k });
       target.append(token);
     }));
-    wrap.prepend(board);
+    const marking = canMark(t, self);
+    wrap.prepend(markHost(board, t, false, marking));
     const actions = node('div', 'game-actions');
     if (t.canAct && online) {
       if (f.dice == null) button(actions, '🎲 掷骰子', 'roll', {}, 'primary');
@@ -284,6 +357,7 @@
     const self_ = t.seats[self];
     leaveButton(actions, t, self_ && !self_.left && self_.alive && t.phase !== 'finished');
     side.append(node('p', 'game-note', f.note), node('p', 'game-hint', self >= 0 && !f.finished ? (t.canAct ? (f.dice == null ? '轮到你了：先掷骰子' : '点亮的飞机可以走，也可以直接点棋盘上的飞机') : '等待其他玩家，不限时') : ''));
+    if (marking) side.append(node('p', 'game-hint', markHint));
     winnersLine(table, t);
     root.append(table);
   }
@@ -320,14 +394,15 @@
       board.append(n);
     }
     if (x.last && x.board[x.last[0]] === '.') { const n = node('span', 'xq-piece spot last'); place(n, x.last[0]); board.append(n); }
-    wrap.prepend(board);
+    const marking = canMark(t, self);
+    wrap.prepend(markHost(board, t, flip, marking));
     const actions = node('div', 'game-actions'), seated = self >= 0 && !t.seats[self].left && t.phase !== 'finished';
     if (seated) {
       if (x.drawOffer === 1 - self) button(actions, '同意和棋', 'draw', {}, 'primary');
       else { const b = button(actions, x.drawOffer === self ? '已提议和棋' : '提议和棋', 'draw'); b.disabled ||= x.drawOffer === self; }
     }
     leaveButton(actions, t, seated, '认输');
-    column.append(actions, node('p', 'game-note', x.note), node('p', 'game-hint', seated ? (t.canAct ? `轮到你（${side[self]}）：先点自己的棋子，再点落点` : '等待对方走棋，不限时') : self < 0 ? '观战中' : ''));
+    column.append(actions, node('p', 'game-note', x.note), node('p', 'game-hint', seated ? (t.canAct ? `轮到你（${side[self]}）：先点自己的棋子，再点落点` : '等待对方走棋，不限时') : self < 0 ? (marking ? `观战中：${markHint}` : '观战中') : ''));
     winnersLine(table, t);
     root.append(table);
   }
@@ -362,6 +437,7 @@
       const board = node('div', 'mp-board');
       m.tiles.forEach((tile, i) => {
         const [r, c] = mpCell(i), n = node('div', `mp-tile ${tile.kind}${m.pending?.tile === i ? ' pending' : ''}`);
+        n.dataset.tile = i;
         n.style.gridRow = r + 1; n.style.gridColumn = c + 1;
         if (tile.kind === 'lot') {
           n.style.setProperty('--district', districtColors[tile.district % districtColors.length]);
@@ -389,12 +465,13 @@
       center.append(actions);
       const log = node('ol', 'mp-log'); for (const line of (m.log || []).slice(-6)) log.append(node('li', '', line)); center.append(log);
       board.append(center);
-      wrap.prepend(board);
+      wrap.prepend(markHost(board, t, false, canMark(t, self)));
     }
     const self_ = t.seats[self];
     const leave = node('div', 'game-actions'); leaveButton(leave, t, self_ && !self_.left && self_.alive && t.phase !== 'finished');
     if (m.phase === 'pick') side.append(actions);
     side.append(leave, node('p', 'game-hint', you && !m.finished ? (t.canAct ? (m.phase === 'pick' ? '轮到你挑角色' : '轮到你了') : '等待其他玩家，不限时') : ''));
+    if (m.phase !== 'pick' && canMark(t, self)) side.append(node('p', 'game-hint', markHint));
     if (you?.character === REMOTE && m.phase !== 'pick' && you.cooldown > 0) side.append(node('p', 'game-hint', `遥控骰子冷却中：还要 ${you.cooldown} 次普通掷骰`));
     winnersLine(table, t);
     root.append(table);
@@ -453,6 +530,7 @@
   window.addEventListener('friend-cards-rendered', () => {refreshPresence();positionPanel();});
   if (stage) new ResizeObserver(positionPanel).observe(stage);
   api.on('games', receive);
+  api.on('game-mark', addMark);
   function walletChanged(w) {const crossed=(wallet<500)!==(w.count<500);wallet=w.count;const n=root.querySelector('.game-head small');if(n)n.textContent=`可用点数 ${wallet.toLocaleString()} · 每人门票 500 点`;if(crossed)render();}
   api.on('wallet', walletChanged);
   api.on('local', walletChanged);

@@ -1,6 +1,6 @@
 {
   "name": "co-fisher",
-  "version": "2.8.1",
+  "version": "2.9.0",
   "description": "联机桌面宠物：敲键盘、点鼠标攒点数，换道具糊好友一脸",
   "private": true,
   "scripts": {

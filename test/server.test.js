@@ -198,7 +198,27 @@ test('board games: 象棋 only lists moves for the side to move, reports whose t
   }finally{for(const c of [red,black,watcher])c.ws.close();}
 }));
 
-test('board games: 大富翁 deals a fresh map, picks are unique, and quitting keeps the ticket',()=>withServer([],async(port)=>{
+test('board games: 象棋 spectators drop named marks that every viewer receives; players cannot',()=>withServer([],async(port)=>{
+  const [red,black,fan,other]=[77,78,79,80].map(n=>client(port,{id:id(n),name:`P${n}`,count:2000}));
+  try{
+    await Promise.all([red,black,fan,other].map(c=>c.wait(m=>m.t==='gameState')));
+    gameCommand(red,'join',{kind:'xiangqi',create:true,tableId:null,ticket:'77'.padStart(32,'0'),count:2000});
+    const key=(await red.wait(m=>m.t==='gameState'&&m.table?.kind==='xiangqi')).table.id;
+    gameCommand(black,'join',{kind:'xiangqi',tableId:key,ticket:'78'.padStart(32,'0'),count:2000});
+    await black.wait(m=>m.t==='gameState'&&m.table?.seats.some(s=>s.id===id(78)));
+    gameCommand(red,'start');await red.wait(m=>m.t==='gameState'&&m.table?.phase==='xiangqi');
+    gameCommand(fan,'watch',{tableId:key});const watching=await fan.wait(m=>m.t==='gameState'&&m.table?.id===key&&m.table.phase==='xiangqi');
+    assert.equal(watching.marks.xiangqi,'spectators');
+    gameCommand(fan,'mark',{tableId:key,square:40,name:'spoofed'});
+    for(const c of [red,black,fan,other]){
+      const m=await c.wait(m=>m.t==='gameMark');
+      assert.deepEqual([m.tableId,m.by,m.name,m.square],[key,id(79),'P79',40]);
+    }
+    gameCommand(red,'mark',{tableId:key,square:40});assert.match((await red.wait(m=>m.t==='gameError')).text,/玩家/);
+  }finally{for(const c of [red,black,fan,other])c.ws.close();}
+}));
+
+test('board games: 大富翁 deals a fresh map, picks are unique, quitting keeps the ticket, players can mark',()=>withServer([],async(port)=>{
   const cs=[74,75,76].map(n=>client(port,{id:id(n),name:`P${n}`,count:2000}));
   try{
     await Promise.all(cs.map(c=>c.wait(m=>m.t==='gameState')));
@@ -215,6 +235,9 @@ test('board games: 大富翁 deals a fresh map, picks are unique, and quitting k
     gameCommand(cs[1],'pick',{character:5});
     const started=await cs[0].wait(m=>m.t==='gameState'&&m.table?.monopoly?.phase==='roll');
     assert.equal(started.act.kind,'monopoly');assert.equal(started.table.turn,id(74));
+    assert.equal(started.marks.monopoly,'everyone');
+    gameCommand(cs[0],'mark',{tableId:key,square:5});
+    const pin=await cs[1].wait(m=>m.t==='gameMark');assert.deepEqual([pin.by,pin.name,pin.square],[id(74),'P74',5]);
   }finally{for(const c of cs)c.ws.close();}
 }));
 

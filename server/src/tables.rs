@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 /// Seated players offline at least this long get a stand-in so their table keeps going.
 const AWAY: Duration = Duration::from_secs(60);
+/// Spectator marks per second per person; faster clicks are dropped without an error.
+const MARKS_PER_SECOND: usize = 6;
 pub struct Games {
     pub epoch: String,
     pub revision: u64,
@@ -21,6 +23,8 @@ pub struct Games {
     numbers: HashMap<String, u64>,
     next_number: u64,
     offline: HashMap<String, Instant>,
+    marks: HashMap<String, VecDeque<Instant>>,
+    next_mark: u64,
 }
 
 #[cfg(test)]
@@ -97,6 +101,53 @@ mod tests {
         assert!(g.snapshot("a")["act"].is_null());
     }
     #[test]
+    fn only_spectators_mark_running_boards_and_floods_are_dropped() {
+        let mut g = Games::default();
+        let ticket = |n: u64| format!("{n:032x}");
+        op(&mut g, "a", "join", json!({"kind":"xiangqi","tableId":null,"create":true,"ticket":ticket(1)})).unwrap();
+        let key = g.snapshot("a")["table"]["id"].clone();
+        let mark = |g: &mut Games, id: &str, square: u64| {
+            let msg = json!({"epoch":g.epoch,"op":"mark","tableId":key,"square":square});
+            g.mark(id, id, &msg)
+        };
+        assert!(mark(&mut g, "z", 4).is_err(), "nothing to mark in the lobby");
+        op(&mut g, "b", "join", json!({"kind":"xiangqi","tableId":key,"ticket":ticket(2)})).unwrap();
+        op(&mut g, "a", "start", json!({})).unwrap();
+        let revision = g.snapshot("a")["tableRevision"].clone();
+        let m = mark(&mut g, "z", 4).unwrap().unwrap();
+        assert_eq!((m["t"].as_str(), m["by"].as_str(), m["name"].as_str()), (Some("gameMark"), Some("z"), Some("z")));
+        assert_eq!((m["square"].as_u64(), m["tableId"].clone()), (Some(4), key.clone()));
+        assert_eq!(g.snapshot("a")["tableRevision"], revision, "marks never make a move stale");
+        assert_eq!(g.snapshot("z")["marks"]["xiangqi"], "spectators");
+        assert_eq!(g.snapshot("z")["marks"]["monopoly"], "everyone");
+        assert!(mark(&mut g, "a", 4).is_err(), "players can't mark");
+        assert!(mark(&mut g, "z", 90).is_err());
+        for _ in 1..MARKS_PER_SECOND {
+            assert!(mark(&mut g, "z", 5).unwrap().is_some());
+        }
+        assert!(mark(&mut g, "z", 5).unwrap().is_none(), "flood dropped quietly");
+        assert!(mark(&mut g, "y", 5).unwrap().is_some(), "each spectator has their own allowance");
+        // 飞行棋 / 大富翁: players mark their own board too; games without marks refuse.
+        for (kind, points, n) in [("flight", 196, 10), ("monopoly", 32, 20), ("blackjack", 0, 30)] {
+            let mut g = Games::default();
+            for (i, id) in ["p", "q", "r"].iter().enumerate() {
+                let key = if i == 0 { Value::Null } else { g.snapshot("p")["table"]["id"].clone() };
+                op(&mut g, id, "join", json!({"kind":kind,"tableId":key,"create":i == 0,"ticket":ticket(n + i as u64)})).unwrap();
+            }
+            op(&mut g, "p", "start", json!({})).unwrap();
+            let key = g.snapshot("p")["table"]["id"].clone();
+            let msg = |square: u64| json!({"epoch":g.epoch,"op":"mark","tableId":key,"square":square});
+            let (player, spectator, outside) = (msg(1), msg(points.max(1) - 1), msg(points));
+            if points == 0 {
+                assert!(g.mark("p", "p", &player).is_err() && g.mark("z", "z", &player).is_err(), "{kind}");
+                continue;
+            }
+            assert!(g.mark("p", "p", &player).unwrap().is_some(), "{kind} player");
+            assert!(g.mark("z", "z", &spectator).unwrap().is_some(), "{kind} spectator");
+            assert!(g.mark("q", "q", &outside).is_err(), "{kind} point range");
+        }
+    }
+    #[test]
     fn spectators_can_watch_but_cannot_act_or_see_cards() {
         let mut g = Games::default();
         join(&mut g, "a", None, true, 1);
@@ -129,6 +180,8 @@ impl Default for Games {
             numbers: HashMap::new(),
             next_number: 1,
             offline: HashMap::new(),
+            marks: HashMap::new(),
+            next_mark: 0,
         }
     }
 }
@@ -193,6 +246,12 @@ impl Games {
             .find(|(_, g)| g.can_act(id))
             .map_or(Value::Null, |(key, g)| json!({"id":key,"number":self.numbers[key],"kind":g.kind()}));
         result["kinds"] = json!(crate::games::KINDS);
+        // Who may drop board marks, per game.
+        result["marks"] = crate::games::MARK_KINDS
+            .iter()
+            .map(|(kind, _, everyone)| (kind.to_string(), json!(if *everyone { "everyone" } else { "spectators" })))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
         result["tables"]=self.tables.iter().filter_map(|(key,g)|{
             let v=g.snapshot("");let t=&v["table"];if t.is_null()||t["phase"]=="finished"{return None;}
             Some(json!({"id":key,"number":self.numbers[key],"kind":t["kind"],"phase":t["phase"],"host":t["host"],"turn":t["turn"],"seats":t["seats"].as_array().unwrap().iter().map(|s|json!({"id":s["id"],"name":s["name"],"alive":s["alive"],"left":s["left"]})).collect::<Vec<_>>()}))
@@ -311,8 +370,34 @@ impl Games {
         self.prune();
         result
     }
+    /// A spectator's mark on a board, broadcast to the room as is: it never changes a
+    /// table's revision, so it can't make a player's pending move stale. None when throttled.
+    pub fn mark(&mut self, id: &str, name: &str, msg: &Value) -> Result<Option<Value>, String> {
+        if msg["epoch"].as_str() != Some(&self.epoch) {
+            return Err("牌桌已更新，请重试".into());
+        }
+        let key = msg["tableId"].as_str().unwrap_or("");
+        let (key, g) = self
+            .tables
+            .iter()
+            .find(|(k, _)| k == key)
+            .ok_or("该牌桌已结束或不存在")?;
+        let points = g.mark_points(id)?;
+        let square = msg["square"].as_u64().filter(|s| *s < points).ok_or("无效位置")?;
+        let now = Instant::now();
+        let recent = self.marks.entry(id.into()).or_default();
+        recent.retain(|t| now.duration_since(*t) < Duration::from_secs(1));
+        if recent.len() >= MARKS_PER_SECOND {
+            return Ok(None);
+        }
+        recent.push_back(now);
+        self.next_mark += 1;
+        Ok(Some(json!({"t":"gameMark","tableId":key,"by":id,"name":name,"square":square,"seq":self.next_mark})))
+    }
     pub fn tick(&mut self, online: &dyn Fn(&str) -> bool) {
         let now = Instant::now();
+        self.marks
+            .retain(|_, q| q.back().is_some_and(|t| now.duration_since(*t) < Duration::from_secs(1)));
         let seated: HashSet<String> = self.tables.iter().flat_map(|(_, g)| g.players()).collect();
         self.offline.retain(|id, _| seated.contains(id) && !online(id));
         for id in seated {

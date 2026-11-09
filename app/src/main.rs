@@ -438,7 +438,7 @@ fn game_command(app:AppHandle,state:St<'_>,mut action:Value)->Value {
     if !action.is_object(){return json!({"ok":false,"error":"无效操作"});}
     let op=action["op"].as_str().unwrap_or("").to_string();
     if !["join","start","leave","hit","stand","fold","check","call","raise","allin","bid","pass","play","sync","watch","exchange","que","discard","peng","gang","hu",
-        "roll","move","draw","pick","buy","upgrade","skip"].contains(&op.as_str()) {
+        "roll","move","draw","pick","buy","upgrade","skip","mark"].contains(&op.as_str()) {
         return json!({"ok":false,"error":"未知操作"});
     }
     let mut i=state.inner.lock().unwrap();
@@ -934,6 +934,8 @@ fn on_net_event(app: &AppHandle, ev: NetEvent) {
             let _ = app.emit("boss", boss);
         }
         NetEvent::BossDown(msg) => on_boss_down(app, &state, &msg),
+        // Spectator marks are pure display: straight to the table UI.
+        NetEvent::Game(msg) if msg["t"]=="gameMark" => {let _=app.emit("game-mark",&msg);}
         NetEvent::Game(msg) => {
             let mut i=state.inner.lock().unwrap();
             if msg["t"]=="gameError" {

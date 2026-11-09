@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 
 pub const ENTRY: u64 = 500;
 pub const KINDS: [&str; 7] = ["blackjack", "holdem", "ddz", "mahjong", "flight", "xiangqi", "monopoly"];
+/// Games with board marks: points on the board, and whether seated players may mark too
+/// (xiangqi keeps marks to spectators, so nobody hints their own game).
+pub const MARK_KINDS: [(&str, u64, bool); 3] = [("xiangqi", 90, false), ("flight", 196, true), ("monopoly", 32, true)];
 /// Stand-in moves for offline players are spaced out so the others can follow them.
 const PACE: Duration = Duration::from_millis(800);
 /// Allowed entrants per game.
@@ -142,6 +145,20 @@ impl SingleGame {
             .as_ref()
             .filter(|t| t.phase != "lobby" && t.phase != "finished")
             .map_or(vec![], |t| t.seats.iter().filter(|s| !s.left).map(|s| s.id.clone()).collect())
+    }
+    /// Board points `id` may mark here: started or finished boards only, and in xiangqi
+    /// only for spectators.
+    pub fn mark_points(&self, id: &str) -> Result<u64, String> {
+        let t = self.table.as_ref().ok_or("该牌桌已结束或不存在")?;
+        let (_, points, everyone) = MARK_KINDS
+            .iter()
+            .find(|(kind, _, _)| *kind == t.kind)
+            .filter(|_| t.phase != "lobby")
+            .ok_or("这张牌桌不能放标记")?;
+        if !everyone && t.seats.iter().any(|s| s.id == id && !s.left) {
+            return Err("对局中的玩家不能放标记".into());
+        }
+        Ok(*points)
     }
     pub fn can_act(&self, id: &str) -> bool {
         let Some(t) = &self.table else { return false };
