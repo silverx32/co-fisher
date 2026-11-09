@@ -71,7 +71,9 @@ button.mini { padding: 1px 7px; font-size: 11px; border-radius: 6px; }
 
 /* ---------- friends */
 #stage { display: flex; align-items: flex-end; gap: 6px; }
-#side { display: flex; flex-direction: column; align-items: flex-end; }
+/* The 20px under the friend cards holds the friends toggle (2px gap + 18px) when there are friends. */
+#side { display: flex; flex-direction: column; align-items: flex-end; padding-bottom: 20px; }
+#side:has(> #friendsToggle:not(.hidden)) { padding-bottom: 0; }
 
 /* ---------- the room's boss, standing over the friends next to me */
 #boss {
@@ -92,7 +94,7 @@ button.mini { padding: 1px 7px; font-size: 11px; border-radius: 6px; }
 #bossMine.low { color: #e53935; }
 .boss-bar { position: relative; height: 15px; margin-top: 2px; border-radius: 8px; background: #ece9f2; overflow: hidden; }
 #bossFill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(#ff8a80, #e53935); transition: width .3s; }
-#friendsToggle { flex: none; margin: 0; padding: 4px 10px; border: none; border-radius: 10px; background: rgba(255,255,255,.88); box-shadow: 0 2px 8px rgba(0,0,0,.18); color: #555; font-size: 11px; white-space: nowrap; }
+#friendsToggle { flex: none; height: 18px; min-width: 66px; margin: 2px 2px 0 0; padding: 0 10px; text-align: center; border: none; border-radius: 9px; background: rgba(255,255,255,.88); box-shadow: 0 2px 6px rgba(0,0,0,.18); color: #555; font-size: 11px; line-height: 18px; white-space: nowrap; }
 #friendsToggle:hover { background: #fff; color: #222; }
 #bossHp { position: relative; display: block; font-size: 10px; line-height: 15px; font-weight: bold; text-align: center; color: #5a2323; white-space: nowrap; }
 #boss.waiting #bossHp, #boss.down #bossHp { color: #666; }
@@ -102,7 +104,7 @@ button.mini { padding: 1px 7px; font-size: 11px; border-radius: 6px; }
 /* At most 8 per row (window width); a full room wraps into a second row above the first. */
 #friends {
   display: flex; flex-direction: row-reverse; flex-wrap: wrap-reverse; align-items: flex-end;
-  gap: 20px 4px; max-width: 716px; margin-bottom: 20px;
+  gap: 20px 4px; max-width: 716px;
 }
 .friend {
   width: 86px; position: relative; text-align: center;

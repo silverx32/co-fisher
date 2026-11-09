@@ -24,9 +24,16 @@ S.me={id:'me',name:'me',char:'claude'};S.wallet={count:0,total:0,inv:{}};S.items
 S.players=[{id:'me',name:'me',char:'claude',count:1},...['fei','wei','kke'].map((n,i)=>({id:n,name:n,char:['deepseek','gemini','kimi'][i],count:100*i,decos:[]}))];
 renderFriends();const toggle=document.querySelector('#friendsToggle'),friends=document.querySelector('#friends');
 check(!toggle.classList.contains('hidden')&&toggle.textContent==='收起好友','toggle shown with friends');check(friends.querySelectorAll('.friend').length===3,'three friend cards');
+// The toggle must never move, and nothing clickable may slide under it: a double-click would throw an item.
+const spot=toggle.getBoundingClientRect(),same=()=>{const r=toggle.getBoundingClientRect();return Math.abs(r.right-spot.right)<1&&Math.abs(r.top-spot.top)<1&&Math.abs(r.bottom-spot.bottom)<1&&r.left>=spot.left-1;};
+const onlyToggle=state=>{for(let y=spot.top+1;y<spot.bottom;y+=3)for(let x=spot.left+1;x<spot.right;x+=4){const u=document.elementFromPoint(x,y),other=u?.closest('.friend,#boss,#gameDock,#me');check(!other,state+': '+(other?.className||other?.id)+' under the toggle at '+Math.round(x)+','+Math.round(y));}
+  for(const b of document.querySelectorAll('.fbtn')){const r=b.getBoundingClientRect();check(!(r.width&&r.left<spot.right&&r.right>spot.left&&r.top<spot.bottom&&r.bottom>spot.top),state+': throw button overlaps the toggle');}};
+onlyToggle('expanded');const card=friends.querySelector('.friend').getBoundingClientRect(),side=document.querySelector('#side').getBoundingClientRect();
+check(Math.abs(side.bottom-card.bottom-20)<1,'cards keep their 20px bottom gap: '+(side.bottom-card.bottom));
 document.body.dataset.qa='passed:expanded';await new Promise(r=>setTimeout(r,600));
-toggle.click();check(friends.classList.contains('hidden')&&toggle.textContent==='👥 3','collapsed shows only me');check(localStorage.getItem('friendsCollapsed')==='1','remembered');
-S.players.push({id:'zed',name:'zed',char:'codex',count:5,decos:[]});renderFriends();check(friends.classList.contains('hidden')&&toggle.textContent==='👥 4','stays collapsed when someone joins');
+toggle.click();check(friends.classList.contains('hidden')&&toggle.textContent==='👥 3','collapsed shows only me');check(localStorage.getItem('friendsCollapsed')==='1','remembered');check(same(),'toggle moved when collapsing');onlyToggle('collapsed');
+toggle.click();check(!friends.classList.contains('hidden')&&same(),'toggle moved when expanding');onlyToggle('expanded again');
+toggle.click();S.players.push({id:'zed',name:'zed',char:'codex',count:5,decos:[]});renderFriends();check(friends.classList.contains('hidden')&&toggle.textContent==='👥 4','stays collapsed when someone joins');
 const rect=toggle.getBoundingClientRect(),me=document.querySelector('#me').getBoundingClientRect();check(rect.right<=me.left+2&&rect.bottom<=me.bottom,'toggle sits next to me');
 document.body.dataset.qa='passed:collapsed';
 }catch(e){document.body.dataset.qa='failed:'+e.message}},300);
