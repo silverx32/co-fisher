@@ -171,6 +171,53 @@ test('games: offline winner receives one settlement without reconnect growth cla
   }finally{for(const c of clients)c.ws.close();returned?.ws.close();}
 }));
 
+test('board games: 象棋 only lists moves for the side to move, reports whose turn it is, and a draw splits the prize',()=>withServer([],async(port)=>{
+  const [red,black,watcher]=[71,72,73].map(n=>client(port,{id:id(n),name:`P${n}`,count:2000}));
+  try{
+    await Promise.all([red,black,watcher].map(c=>c.wait(m=>m.t==='gameState')));
+    assert(gameState(red).kinds.includes('xiangqi'));
+    gameCommand(red,'join',{kind:'xiangqi',create:true,tableId:null,ticket:'71'.padStart(32,'0'),count:2000});
+    const key=(await red.wait(m=>m.t==='gameState'&&m.table?.kind==='xiangqi')).table.id;
+    gameCommand(black,'join',{kind:'xiangqi',tableId:key,ticket:'72'.padStart(32,'0'),count:2000});
+    await black.wait(m=>m.t==='gameState'&&m.table?.seats.some(s=>s.id===id(72)));
+    gameCommand(watcher,'join',{kind:'xiangqi',tableId:key,ticket:'73'.padStart(32,'0'),count:2000});
+    assert.match((await watcher.wait(m=>m.t==='gameError')).text,/满/);
+    gameCommand(red,'start');
+    const r=await red.wait(m=>m.t==='gameState'&&m.table?.phase==='xiangqi');
+    assert.equal(r.act.kind,'xiangqi');assert.equal(r.act.id,key);assert.equal(r.table.xiangqi.moves.length,44);
+    const b=await black.wait(m=>m.t==='gameState'&&m.table?.phase==='xiangqi');
+    assert.equal(b.act,null);assert.deepEqual(b.table.xiangqi.moves,[]);
+    gameCommand(black,'move',{from:1,to:20});assert.match((await black.wait(m=>m.t==='gameError')).text,/轮到/);
+    gameCommand(red,'move',{from:64,to:67});
+    const turned=await black.wait(m=>m.t==='gameState'&&m.act?.kind==='xiangqi');
+    assert.equal(turned.table.xiangqi.board[67],'C');
+    gameCommand(red,'draw');await black.wait(m=>m.t==='gameState'&&m.table?.xiangqi?.drawOffer===0);
+    gameCommand(black,'draw');
+    const done=await red.wait(m=>m.t==='gameState'&&m.table?.phase==='finished');
+    assert.equal(done.receipt.net,-100);assert.equal(done.receipt.final,true);assert.equal(done.act,null);
+  }finally{for(const c of [red,black,watcher])c.ws.close();}
+}));
+
+test('board games: 大富翁 deals a fresh map, picks are unique, and quitting keeps the ticket',()=>withServer([],async(port)=>{
+  const cs=[74,75,76].map(n=>client(port,{id:id(n),name:`P${n}`,count:2000}));
+  try{
+    await Promise.all(cs.map(c=>c.wait(m=>m.t==='gameState')));
+    gameCommand(cs[0],'join',{kind:'monopoly',create:true,tableId:null,ticket:'74'.padStart(32,'0'),count:2000});
+    const key=(await cs[0].wait(m=>m.t==='gameState'&&m.table?.kind==='monopoly')).table.id;
+    for(const [i,c] of cs.entries()) if(i){gameCommand(c,'join',{kind:'monopoly',tableId:key,ticket:String(74+i).padStart(32,'0'),count:2000});await c.wait(m=>m.t==='gameState'&&m.table?.seats.some(s=>s.id===id(74+i)));}
+    gameCommand(cs[0],'start');
+    const v=await cs[1].wait(m=>m.t==='gameState'&&m.table?.monopoly?.phase==='pick');
+    assert.equal(v.table.monopoly.tiles.length,32);assert.equal(v.table.monopoly.characters.length,8);assert.equal(v.act.kind,'monopoly');
+    gameCommand(cs[0],'pick',{character:3});await cs[1].wait(m=>m.t==='gameState'&&m.table?.monopoly?.players[0].character===3);
+    gameCommand(cs[1],'pick',{character:3});assert.match((await cs[1].wait(m=>m.t==='gameError')).text,/别人/);
+    gameCommand(cs[2],'leave');
+    const quit=await cs[2].wait(m=>m.t==='gameState'&&m.receipt?.final);assert.equal(quit.receipt.net,-500);
+    gameCommand(cs[1],'pick',{character:5});
+    const started=await cs[0].wait(m=>m.t==='gameState'&&m.table?.monopoly?.phase==='roll');
+    assert.equal(started.act.kind,'monopoly');assert.equal(started.table.turn,id(74));
+  }finally{for(const c of cs)c.ws.close();}
+}));
+
 test('joins, sees roster and status updates', () => withServer([], async (port) => {
   const a = client(port, { id: id(1), name: 'A' });
   await a.wait((m) => m.t === 'welcome');

@@ -204,8 +204,26 @@ function renderFriends() {
     setSrc(node.querySelector('.fimg'), srcFor(p.char, skinOf(p), ft.tapper.frame));
   }
   renderFriendButtons();
+  renderFriendsToggle();
   window.dispatchEvent(new Event('friend-cards-rendered'));
 }
+
+// Collapsing the friends bar leaves only me (Boss and the table entry stay); remembered across restarts.
+let friendsCollapsed = localStorage.getItem('friendsCollapsed') === '1';
+function renderFriendsToggle() {
+  const n = friendEls.size;
+  const b = $('#friendsToggle');
+  b.classList.toggle('hidden', n === 0);
+  b.textContent = friendsCollapsed ? `👥 ${n}` : '收起好友';
+  b.title = friendsCollapsed ? `展开 ${n} 位好友` : '收起好友，只显示自己';
+  $('#friends').classList.toggle('hidden', friendsCollapsed);
+}
+$('#friendsToggle').addEventListener('click', () => {
+  friendsCollapsed = !friendsCollapsed;
+  localStorage.setItem('friendsCollapsed', friendsCollapsed ? '1' : '0');
+  renderFriendsToggle();
+  window.dispatchEvent(new Event('friend-cards-rendered'));
+});
 
 // Each friend card has one button per item, showing how many we own; 0 = disabled.
 function renderFriendButtons() {

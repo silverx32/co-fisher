@@ -21,9 +21,12 @@ use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Message;
 
 mod cards;
+mod flight;
 mod games;
-mod tables;
 mod mahjong;
+mod monopoly;
+mod tables;
+mod xiangqi;
 
 pub const PROTOCOL_VERSION: u64 = 2;
 pub const DEFAULT_PORT: u16 = 23333;
@@ -341,7 +344,8 @@ impl Room {
     fn game_tick(&mut self) {
         let before: Vec<(String,i64)> = self.players.keys().map(|id|(id.clone(),self.games.offset(id))).collect();
         let revision=self.games.revision;
-        self.games.tick();
+        let players=&self.players;
+        self.games.tick(&|id| players.contains_key(id));
         if self.games.revision!=revision {
             for (id,offset) in before { if let Some(p)=self.players.get_mut(&id) {p.count=adjust_game_count(p.count,self.games.offset(&id)-offset);} }
             self.game_snapshots();self.dirty=true;

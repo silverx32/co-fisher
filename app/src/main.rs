@@ -428,11 +428,17 @@ async fn leave(app: AppHandle, state: St<'_>) -> Result<Value, ()> {
     Ok(json!({ "ok": true, "server": server_status(&state).await }))
 }
 
+/// Table games this client can show, by protocol name.
+fn game_name(kind:&str)->Option<&'static str> {
+    Some(match kind {"blackjack"=>"21 点","holdem"=>"德州扑克","ddz"=>"斗地主","mahjong"=>"四川麻将","flight"=>"飞行棋","xiangqi"=>"中国象棋","monopoly"=>"大富翁",_=>return None})
+}
+
 #[tauri::command]
 fn game_command(app:AppHandle,state:St<'_>,mut action:Value)->Value {
     if !action.is_object(){return json!({"ok":false,"error":"无效操作"});}
     let op=action["op"].as_str().unwrap_or("").to_string();
-    if !["join","start","leave","hit","stand","fold","check","call","raise","allin","bid","pass","play","sync","watch","exchange","que","discard","peng","gang","hu"].contains(&op.as_str()) {
+    if !["join","start","leave","hit","stand","fold","check","call","raise","allin","bid","pass","play","sync","watch","exchange","que","discard","peng","gang","hu",
+        "roll","move","draw","pick","buy","upgrade","skip"].contains(&op.as_str()) {
         return json!({"ok":false,"error":"未知操作"});
     }
     let mut i=state.inner.lock().unwrap();
@@ -441,7 +447,7 @@ fn game_command(app:AppHandle,state:St<'_>,mut action:Value)->Value {
     if op=="join" {
         if config::save_disabled(){return json!({"ok":false,"error":"存档不可写，暂时不能报名"});}
         let kind=action["kind"].as_str().unwrap_or("").to_string();
-        if !["blackjack","holdem","ddz","mahjong"].contains(&kind.as_str()){return json!({"ok":false,"error":"未知游戏"});}
+        if game_name(&kind).is_none(){return json!({"ok":false,"error":"未知游戏"});}
         let ticket=match i.config.reserve_game(&kind){Ok(t)=>t,Err(e)=>return json!({"ok":false,"error":e})};
         if let Some(ticket)=i.config.game_ticket.as_mut(){ticket.table_id=action["tableId"].as_str().map(String::from);ticket.create=action["create"].as_bool()==Some(true);}
         action["ticket"]=ticket.into();action["count"]=i.config.count.saturating_add(500).into();
@@ -944,7 +950,14 @@ fn on_net_event(app: &AppHandle, ev: NetEvent) {
             if i.config.game_receipt(&msg["receipt"]) {
                 config::save(&i.config);i.status_soon();let _=app.emit("wallet",i.wallet());
             }
-            i.game=msg.clone();let _=app.emit("games",msg);
+            let before=std::mem::replace(&mut i.game,msg.clone());drop(i);
+            let _=app.emit("games",&msg);
+            // A table just started waiting on me: a notice in the screen's top-right corner.
+            let turn=&msg["act"];
+            if turn["id"].is_string() && turn["id"]!=before["act"]["id"] {
+                let name=game_name(turn["kind"].as_str().unwrap_or("")).unwrap_or("小游戏");
+                show_effect(app,&state,&json!({"item":"turn","title":"轮到你了","text":format!("{name} · {} 号桌",turn["number"])}));
+            }
         }
         NetEvent::Skin(msg) => {
             let Some(id) = msg["id"].as_str().map(|s| s.chars().take(64).collect::<String>()) else { return };

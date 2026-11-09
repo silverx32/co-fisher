@@ -4,8 +4,11 @@ use crate::{
     games::{Receipt, SingleGame},
 };
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
 
+/// Seated players offline at least this long get a stand-in so their table keeps going.
+const AWAY: Duration = Duration::from_secs(60);
 pub struct Games {
     pub epoch: String,
     pub revision: u64,
@@ -17,6 +20,7 @@ pub struct Games {
     used: VecDeque<String>,
     numbers: HashMap<String, u64>,
     next_number: u64,
+    offline: HashMap<String, Instant>,
 }
 
 #[cfg(test)]
@@ -73,6 +77,26 @@ mod tests {
         assert!(!g.receipts["b"].final_);
     }
     #[test]
+    fn turn_owner_is_reported_and_only_long_offline_players_are_played_for() {
+        let mut g = Games::default();
+        let ticket = |n: u64| format!("{n:032x}");
+        op(&mut g, "a", "join", json!({"kind":"xiangqi","tableId":null,"create":true,"ticket":ticket(1)})).unwrap();
+        let key = g.snapshot("a")["table"]["id"].clone();
+        op(&mut g, "b", "join", json!({"kind":"xiangqi","tableId":key,"ticket":ticket(2)})).unwrap();
+        op(&mut g, "a", "start", json!({})).unwrap();
+        assert_eq!(g.snapshot("a")["act"]["kind"], "xiangqi");
+        assert!(g.snapshot("b")["act"].is_null());
+        assert!(g.snapshot("z")["kinds"].as_array().unwrap().contains(&json!("monopoly")));
+        let revision = g.revision;
+        g.tick(&|id| id != "a");
+        assert_eq!(g.revision, revision, "a short disconnect must not move for them");
+        g.offline.insert("a".into(), Instant::now() - AWAY);
+        g.tick(&|id| id != "a");
+        assert!(g.revision > revision);
+        assert_eq!(g.snapshot("b")["act"]["kind"], "xiangqi");
+        assert!(g.snapshot("a")["act"].is_null());
+    }
+    #[test]
     fn spectators_can_watch_but_cannot_act_or_see_cards() {
         let mut g = Games::default();
         join(&mut g, "a", None, true, 1);
@@ -104,6 +128,7 @@ impl Default for Games {
             used: VecDeque::new(),
             numbers: HashMap::new(),
             next_number: 1,
+            offline: HashMap::new(),
         }
     }
 }
@@ -161,6 +186,13 @@ impl Games {
             Value::Null,
             |r| json!({"ticket":r.ticket,"net":r.net,"final":r.final_}),
         );
+        // The table waiting on this player, even while they are watching another one.
+        result["act"] = self
+            .tables
+            .iter()
+            .find(|(_, g)| g.can_act(id))
+            .map_or(Value::Null, |(key, g)| json!({"id":key,"number":self.numbers[key],"kind":g.kind()}));
+        result["kinds"] = json!(crate::games::KINDS);
         result["tables"]=self.tables.iter().filter_map(|(key,g)|{
             let v=g.snapshot("");let t=&v["table"];if t.is_null()||t["phase"]=="finished"{return None;}
             Some(json!({"id":key,"number":self.numbers[key],"kind":t["kind"],"phase":t["phase"],"host":t["host"],"turn":t["turn"],"seats":t["seats"].as_array().unwrap().iter().map(|s|json!({"id":s["id"],"name":s["name"],"alive":s["alive"],"left":s["left"]})).collect::<Vec<_>>()}))
@@ -279,10 +311,24 @@ impl Games {
         self.prune();
         result
     }
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self, online: &dyn Fn(&str) -> bool) {
+        let now = Instant::now();
+        let seated: HashSet<String> = self.tables.iter().flat_map(|(_, g)| g.players()).collect();
+        self.offline.retain(|id, _| seated.contains(id) && !online(id));
+        for id in seated {
+            if !online(&id) {
+                self.offline.entry(id).or_insert(now);
+            }
+        }
+        let away: HashSet<String> = self
+            .offline
+            .iter()
+            .filter(|(_, since)| now.duration_since(**since) >= AWAY)
+            .map(|(id, _)| id.clone())
+            .collect();
         for i in 0..self.tables.len() {
             let before = self.tables[i].1.revision;
-            self.tables[i].1.tick();
+            self.tables[i].1.tick(&|id| away.contains(id));
             if before != self.tables[i].1.revision {
                 self.sync_ledger(i);
                 self.revision += 1;

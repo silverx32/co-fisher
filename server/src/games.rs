@@ -1,5 +1,6 @@
 //! One authoritative table per social room. Snapshots are personalized: private
 //! hands never enter the ordinary room broadcast, including for spectators.
+//! Turns have no time limit; only players offline for a while are played for.
 use crate::cards::{self, Pattern};
 pub use crate::tables::Games;
 use serde_json::{json, Value};
@@ -7,7 +8,37 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 pub const ENTRY: u64 = 500;
-const TURN: Duration = Duration::from_secs(30);
+pub const KINDS: [&str; 7] = ["blackjack", "holdem", "ddz", "mahjong", "flight", "xiangqi", "monopoly"];
+/// Stand-in moves for offline players are spaced out so the others can follow them.
+const PACE: Duration = Duration::from_millis(800);
+/// Allowed entrants per game.
+fn seats(kind: &str) -> (usize, usize) {
+    match kind {
+        "ddz" => (3, 3),
+        "mahjong" => (4, 4),
+        "holdem" => (3, 9),
+        "xiangqi" => (2, 2),
+        "flight" => (2, 4),
+        "monopoly" => (2, 6),
+        _ => (3, 16),
+    }
+}
+/// A game that runs its own turns (飞行棋 / 象棋 / 大富翁). The table keeps the
+/// seats, tickets and prize; the board decides who may act and who won.
+pub(crate) trait Board: Send {
+    fn can_act(&self, seat: usize) -> bool;
+    fn command(&mut self, seat: usize, msg: &Value) -> Result<(), String>;
+    fn forfeit(&mut self, seat: usize);
+    /// One step on behalf of seats whose players are `away`; false when none was due.
+    fn auto(&mut self, away: &dyn Fn(usize) -> bool) -> bool;
+    fn snapshot(&self, viewer: Option<usize>) -> Value;
+    fn turn(&self) -> usize;
+    fn note(&self) -> String;
+    /// Not knocked out (bankrupt) and not forfeited.
+    fn alive(&self, seat: usize) -> bool;
+    /// Seats sharing the prize, once the game is over.
+    fn winners(&self) -> Option<Vec<usize>>;
+}
 #[derive(Clone, PartialEq)]
 pub(crate) struct Receipt {
     pub ticket: String,
@@ -41,7 +72,10 @@ struct Table {
     min_raise: u64,
     pending: Vec<bool>,
     can_raise: Vec<bool>,
+    /// End of the pause between blackjack / Hold'em hands.
     deadline: Instant,
+    /// Earliest next stand-in move for an offline player.
+    paced: Instant,
     landlord: Option<usize>,
     bid: u64,
     bidder: Option<usize>,
@@ -56,6 +90,7 @@ struct Table {
     reveal: bool,
     entrants: usize,
     mahjong: Option<crate::mahjong::Mahjong>,
+    game: Option<Box<dyn Board>>,
 }
 pub(crate) struct SingleGame {
     pub epoch: String,
@@ -98,6 +133,27 @@ impl SingleGame {
             },
         );
     }
+    pub fn kind(&self) -> Option<&str> {
+        self.table.as_ref().map(|t| t.kind.as_str())
+    }
+    /// Seated, still in an unfinished game; offline time is only tracked for them.
+    pub fn players(&self) -> Vec<String> {
+        self.table
+            .as_ref()
+            .filter(|t| t.phase != "lobby" && t.phase != "finished")
+            .map_or(vec![], |t| t.seats.iter().filter(|s| !s.left).map(|s| s.id.clone()).collect())
+    }
+    pub fn can_act(&self, id: &str) -> bool {
+        let Some(t) = &self.table else { return false };
+        let Some(i) = t.seats.iter().position(|s| s.id == id) else { return false };
+        if let Some(m) = &t.mahjong {
+            return m.can_act(i);
+        }
+        if let Some(b) = &t.game {
+            return t.phase != "finished" && b.can_act(i);
+        }
+        !["lobby", "intermission", "finished"].contains(&t.phase.as_str()) && t.turn == i
+    }
     pub fn snapshot(&self, id: &str) -> Value {
         let receipt = self
             .receipts
@@ -105,12 +161,11 @@ impl SingleGame {
             .map(|r| json!({"ticket":r.ticket,"net":r.net,"final":r.final_}));
         let table = self.table.as_ref().map(|t| {
             let mine = t.seats.iter().position(|s| s.id == id);
-            let can_act = t.mahjong.as_ref().map_or_else(||t.phase != "lobby" && t.phase != "intermission" && t.phase != "finished" && mine == Some(t.turn),|m|mine.is_some_and(|i|m.can_act(i)));
-            json!({
+            let can_act = self.can_act(id);
+            let mut v = json!({
                 "kind":t.kind,"phase":t.phase,"round":t.round,"turn":t.seats.get(t.turn).map(|s| &s.id),
                 "host":t.seats.first().map(|s| &s.id),"entry":ENTRY,"pot":t.entrants as u64*ENTRY,
                 "prize":t.entrants as u64*ENTRY*80/100,"board":t.board,"note":t.note,"winners":t.winners,
-                "remainingMs": t.deadline.saturating_duration_since(Instant::now()).as_millis() as u64,
                 "landlord":t.landlord.map(|i| &t.seats[i].id),"bid":t.bid,
                 "bottom":if t.landlord.is_some() { t.bottom.clone() } else { vec![] },
                 "last":t.last,"lastOwner":t.seats.get(t.last_owner).map(|s| &s.name),
@@ -123,7 +178,11 @@ impl SingleGame {
                     "count":s.hand.len(),"cards":if mine==Some(i) || (t.reveal && !s.folded && t.kind=="holdem") || (t.reveal && t.kind=="blackjack") { Some(&s.hand) } else { None },
                     "score":if t.kind=="blackjack" && (mine==Some(i)||t.reveal) { Some(cards::blackjack(&s.hand)) } else { None },
                 })).collect::<Vec<_>>(),"mahjong":t.mahjong.as_ref().map(|m|m.snapshot(mine)),
-            })
+            });
+            if let Some(b) = &t.game {
+                v[t.kind.as_str()] = b.snapshot(mine);
+            }
+            v
         });
         json!({"t":"gameState","epoch":self.epoch,"revision":self.revision,"table":table,"receipt":receipt})
     }
@@ -157,7 +216,7 @@ impl SingleGame {
             }
             let kind = msg["kind"]
                 .as_str()
-                .filter(|k| ["blackjack", "holdem", "ddz", "mahjong"].contains(k))
+                .filter(|k| KINDS.contains(k))
                 .ok_or("未知游戏")?;
             if self.table.as_ref().is_none_or(|t| t.phase == "finished") {
                 self.table = Some(Table::new(kind));
@@ -169,13 +228,7 @@ impl SingleGame {
             if t.seats.iter().any(|s| s.id == id) {
                 return Err("已经报名了".into());
             }
-            let max = match kind {
-                "ddz" => 3,
-                "mahjong" => 4,
-                "holdem" => 9,
-                _ => 16,
-            };
-            if t.seats.len() >= max {
+            if t.seats.len() >= seats(kind).1 {
                 return Err("牌桌已满".into());
             }
             let seat = Seat {
@@ -220,11 +273,14 @@ impl SingleGame {
             if t.phase != "lobby" || i != 0 {
                 return Err("只有第一位报名者可以开局".into());
             }
-            if t.seats.len() < 3
-                || (t.kind == "ddz" && t.seats.len() != 3)
-                || (t.kind == "mahjong" && t.seats.len() != 4)
-            {
-                return Err("至少三人报名；斗地主三人，四川麻将四人".into());
+            let (min, max) = seats(&t.kind);
+            if !(min..=max).contains(&t.seats.len()) {
+                return Err(match t.kind.as_str() {
+                    "ddz" => "斗地主需要三人".into(),
+                    "mahjong" => "四川麻将需要四人".into(),
+                    "xiangqi" => "象棋需要两人".into(),
+                    _ => format!("至少 {min} 人报名才能开局"),
+                });
             }
             t.begin();
             self.after_begin(t);
@@ -255,6 +311,11 @@ impl SingleGame {
             if t.kind == "mahjong" {
                 t.mahjong.as_mut().unwrap().forfeit(i);
                 self.sync_mahjong(t);
+                return Ok(());
+            }
+            if let Some(b) = t.game.as_mut() {
+                b.forfeit(i);
+                self.sync_board(t);
                 return Ok(());
             }
             if t.kind == "ddz" {
@@ -293,6 +354,15 @@ impl SingleGame {
             self.sync_mahjong(t);
             return Ok(());
         }
+        if t.game.is_some() && t.phase != "finished" {
+            // Character picks and draw offers don't depend on whose turn it is.
+            if msg["revision"].as_u64() != Some(self.revision) && !["pick", "draw"].contains(&op) {
+                return Err("局面已变化，请重新操作".into());
+            }
+            t.game.as_mut().unwrap().command(i, msg)?;
+            self.sync_board(t);
+            return Ok(());
+        }
         if !t.seats[i].alive
             || t.phase == "lobby"
             || t.phase == "finished"
@@ -327,55 +397,66 @@ impl SingleGame {
         }
         Ok(())
     }
-    pub fn tick(&mut self) {
+    /// Ends pauses between hands and plays for seats whose players are `away`
+    /// (offline too long). Nobody who is present is ever hurried.
+    pub fn tick(&mut self, away: &dyn Fn(&str) -> bool) {
         let Some(mut t) = self.table.take() else {
             return;
         };
+        let now = Instant::now();
+        let ids: Vec<String> = t.seats.iter().map(|s| s.id.clone()).collect();
+        let seat_away = |i: usize| away(&ids[i]);
         if t.phase == "mahjong" {
-            if t.mahjong.as_mut().unwrap().tick() {
+            if now >= t.paced && t.mahjong.as_mut().unwrap().auto(&seat_away) {
+                t.paced = now + PACE;
                 self.sync_mahjong(&mut t);
                 self.revision += 1;
             }
-            self.table = Some(t);
-            return;
-        }
-        if !["lobby", "finished"].contains(&t.phase.as_str()) && Instant::now() >= t.deadline {
-            if t.phase == "intermission" {
+        } else if t.game.is_some() {
+            if t.phase != "finished" && now >= t.paced && t.game.as_mut().unwrap().auto(&seat_away) {
+                t.paced = now + PACE;
+                self.sync_board(&mut t);
+                self.revision += 1;
+            }
+        } else if t.phase == "intermission" {
+            if now >= t.deadline {
                 t.begin();
                 self.after_begin(&mut t);
-            } else {
-                let i = t.turn;
-                match t.kind.as_str() {
-                    "blackjack" => {
-                        t.seats[i].stood = true;
-                        self.advance_blackjack(&mut t);
-                    }
-                    "holdem" => {
-                        let op = if t.seats[i].bet >= t.current {
-                            "check"
-                        } else {
-                            "fold"
-                        };
-                        let _ = self.poker_action(&mut t, i, op, 0);
-                        self.advance_poker(&mut t, i);
-                    }
-                    _ => {
-                        let msg = if t.phase == "bid" {
-                            json!({"bid":0})
-                        } else if t.last_pattern.is_some() {
-                            json!({})
-                        } else {
-                            json!({"cards":[t.seats[i].hand[0]]})
-                        };
-                        let op = if t.phase == "bid" {
-                            "bid"
-                        } else if t.last_pattern.is_some() {
-                            "pass"
-                        } else {
-                            "play"
-                        };
-                        let _ = self.ddz_action(&mut t, i, op, &msg);
-                    }
+                self.revision += 1;
+            }
+        } else if !["lobby", "finished"].contains(&t.phase.as_str()) && now >= t.paced && seat_away(t.turn) {
+            t.paced = now + PACE;
+            let i = t.turn;
+            match t.kind.as_str() {
+                "blackjack" => {
+                    t.seats[i].stood = true;
+                    self.advance_blackjack(&mut t);
+                }
+                "holdem" => {
+                    let op = if t.seats[i].bet >= t.current {
+                        "check"
+                    } else {
+                        "fold"
+                    };
+                    let _ = self.poker_action(&mut t, i, op, 0);
+                    self.advance_poker(&mut t, i);
+                }
+                _ => {
+                    let msg = if t.phase == "bid" {
+                        json!({"bid":0})
+                    } else if t.last_pattern.is_some() {
+                        json!({})
+                    } else {
+                        json!({"cards":[t.seats[i].hand[0]]})
+                    };
+                    let op = if t.phase == "bid" {
+                        "bid"
+                    } else if t.last_pattern.is_some() {
+                        "pass"
+                    } else {
+                        "play"
+                    };
+                    let _ = self.ddz_action(&mut t, i, op, &msg);
                 }
             }
             self.revision += 1;
@@ -404,6 +485,10 @@ impl SingleGame {
             self.sync_mahjong(t);
             return;
         }
+        if t.game.is_some() {
+            self.sync_board(t);
+            return;
+        }
         if t.kind == "blackjack" {
             self.advance_blackjack(t);
         } else if t.kind == "holdem" {
@@ -411,10 +496,27 @@ impl SingleGame {
             self.advance_poker(t, after);
         }
     }
+    fn sync_board(&mut self, t: &mut Table) {
+        let b = t.game.as_ref().unwrap();
+        t.turn = b.turn();
+        t.note = b.note();
+        let winners = b.winners();
+        let out: Vec<usize> = (0..t.seats.len())
+            .filter(|i| t.seats[*i].alive && !b.alive(*i))
+            .collect();
+        for i in out {
+            // Knocked out (bankrupt): settled at zero now, free to join another table.
+            t.seats[i].alive = false;
+            self.receipt(&t.seats[i], 0, true);
+        }
+        if let Some(winners) = winners {
+            let note = t.note.clone();
+            self.finish(t, &winners, &note);
+        }
+    }
     fn sync_mahjong(&mut self, t: &mut Table) {
         let m = t.mahjong.as_ref().unwrap();
         t.turn = m.turn;
-        t.deadline = m.deadline;
         t.note = m.note.clone();
         for (i, s) in t.seats.iter_mut().enumerate() {
             s.alive = !m.won[i] && !m.left[i];
@@ -460,7 +562,6 @@ impl SingleGame {
         }
         if let Some(i) = t.seats.iter().position(|s| s.alive && !s.left && !s.stood) {
             t.turn = i;
-            t.deadline = Instant::now() + TURN;
             return;
         }
         t.reveal = true;
@@ -574,7 +675,6 @@ impl SingleGame {
                 .find(|j| t.pending[*j] && t.eligible(*j))
             {
                 t.turn = j;
-                t.deadline = Instant::now() + TURN;
                 return;
             }
             if t.phase == "river" {
@@ -601,7 +701,6 @@ impl SingleGame {
             }
             if betting.len() >= 2 {
                 t.turn = t.next(t.button, |s| s.alive && !s.folded && !s.left && s.chips > 0);
-                t.deadline = Instant::now() + TURN;
                 return;
             }
         }
@@ -699,7 +798,6 @@ impl SingleGame {
             } else {
                 t.turn = (i + 1) % 3;
             }
-            t.deadline = Instant::now() + TURN;
             return Ok(());
         }
         if op == "pass" {
@@ -763,7 +861,6 @@ impl SingleGame {
         } else {
             return Err("请选择出牌或不出".into());
         }
-        t.deadline = Instant::now() + TURN;
         Ok(())
     }
 }
@@ -782,7 +879,8 @@ impl Table {
             min_raise: 20,
             pending: vec![],
             can_raise: vec![],
-            deadline: Instant::now() + TURN,
+            deadline: Instant::now(),
+            paced: Instant::now(),
             landlord: None,
             bid: 0,
             bidder: None,
@@ -797,6 +895,7 @@ impl Table {
             reveal: false,
             entrants: 0,
             mahjong: None,
+            game: None,
         }
     }
     fn next(&self, after: usize, predicate: impl Fn(&Seat) -> bool) -> usize {
@@ -845,10 +944,23 @@ impl Table {
         }
         self.pending = vec![false; self.seats.len()];
         self.can_raise = vec![true; self.seats.len()];
+        let names: Vec<String> = self.seats.iter().map(|s| s.name.clone()).collect();
         match self.kind.as_str() {
             "mahjong" => {
                 self.phase = "mahjong".into();
                 self.mahjong = Some(crate::mahjong::Mahjong::new());
+            }
+            "flight" => {
+                self.phase = "flight".into();
+                self.game = Some(Box::new(crate::flight::Flight::new(names)));
+            }
+            "xiangqi" => {
+                self.phase = "xiangqi".into();
+                self.game = Some(Box::new(crate::xiangqi::Xiangqi::new()));
+            }
+            "monopoly" => {
+                self.phase = "monopoly".into();
+                self.game = Some(Box::new(crate::monopoly::Monopoly::new(names)));
             }
             "blackjack" => {
                 self.phase = "blackjack".into();
@@ -914,7 +1026,6 @@ impl Table {
                 self.note = "轮流叫地主：不叫、1 分、2 分或 3 分".into();
             }
         }
-        self.deadline = Instant::now() + TURN;
     }
 }
 
@@ -944,9 +1055,97 @@ mod tests {
             -400
         );
         let revision = g.revision;
-        g.tick();
+        g.tick(&|_| true);
         assert_eq!(g.revision, revision);
         assert_eq!(g.offset("a"), 1100);
+    }
+    fn start(g: &mut Games, ids: &[&str], kind: &str) {
+        for id in ids {
+            join(g, id, kind);
+        }
+        g.command(ids[0], ids[0], &json!({"epoch":g.epoch,"op":"start"}), 0)
+            .unwrap();
+    }
+    fn act(g: &mut Games, id: &str, extra: Value) -> Result<(), String> {
+        let mut msg = json!({"epoch":g.epoch,"revision":g.revision});
+        for (k, v) in extra.as_object().unwrap() {
+            msg[k] = v.clone();
+        }
+        g.command(id, id, &msg, 0)
+    }
+    #[test]
+    fn board_games_check_seat_counts_and_share_the_prize() {
+        let mut g = Games::default();
+        join(&mut g, "a", "xiangqi");
+        assert!(g
+            .command("a", "a", &json!({"epoch":g.epoch,"op":"start"}), 0)
+            .is_err());
+        join(&mut g, "b", "xiangqi");
+        assert!(g
+            .command(
+                "c",
+                "c",
+                &json!({"epoch":g.epoch,"op":"join","kind":"xiangqi","ticket":format!("{:0>32}", "c")}),
+                500
+            )
+            .is_err());
+        g.command("a", "a", &json!({"epoch":g.epoch,"op":"start"}), 0)
+            .unwrap();
+        let view = g.snapshot("a");
+        assert_eq!(view["table"]["xiangqi"]["moves"].as_array().unwrap().len(), 44);
+        assert!(view["table"]["canAct"].as_bool().unwrap());
+        assert!(g.snapshot("b")["table"]["xiangqi"]["moves"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        // Stale clicks must not move a piece; the current revision does.
+        let mv = json!({"op":"move","from":64,"to":67});
+        assert!(g
+            .command("a", "a", &json!({"epoch":g.epoch,"op":"move","from":64,"to":67,"revision":0}), 0)
+            .is_err());
+        act(&mut g, "a", mv).unwrap();
+        act(&mut g, "a", json!({"op":"draw"})).unwrap();
+        act(&mut g, "b", json!({"op":"draw"})).unwrap();
+        assert_eq!(g.snapshot("a")["table"]["phase"], "finished");
+        assert_eq!((g.offset("a"), g.offset("b")), (-100, -100));
+    }
+    #[test]
+    fn quitting_a_board_game_forfeits_the_ticket() {
+        let mut g = Games::default();
+        start(&mut g, &["a", "b", "c"], "flight");
+        assert!(g.snapshot("z")["table"]["flight"]["players"].is_array());
+        act(&mut g, "b", json!({"op":"leave"})).unwrap();
+        assert_eq!(g.offset("b"), -500);
+        assert!(g.receipts["b"].final_);
+        act(&mut g, "a", json!({"op":"leave"})).unwrap();
+        assert_eq!(g.snapshot("c")["table"]["winners"], json!(["c"]));
+        assert_eq!(g.offset("c"), 700);
+    }
+    #[test]
+    fn monopoly_plays_to_the_end_with_stand_ins_and_settles_once() {
+        let mut g = Games::default();
+        start(&mut g, &["a", "b", "c"], "monopoly");
+        assert_eq!(g.snapshot("a")["table"]["monopoly"]["phase"], "pick");
+        // Picks happen together, so an older revision is accepted for them.
+        g.command("a", "a", &json!({"epoch":g.epoch,"op":"pick","character":0,"revision":0}), 0)
+            .unwrap();
+        assert!(act(&mut g, "b", json!({"op":"pick","character":0})).is_err());
+        act(&mut g, "c", json!({"op":"leave"})).unwrap();
+        for _ in 0..5000 {
+            if g.table.as_ref().unwrap().phase == "finished" {
+                break;
+            }
+            g.table.as_mut().unwrap().paced = Instant::now();
+            g.tick(&|_| true);
+        }
+        let v = g.snapshot("a");
+        assert_eq!(v["table"]["phase"], "finished");
+        assert_eq!(v["table"]["monopoly"]["finished"], true);
+        assert_eq!(g.offset("c"), -500);
+        assert_eq!(
+            ["a", "b", "c"].iter().map(|id| g.offset(id)).sum::<i64>(),
+            -300
+        );
     }
     fn join(g: &mut Games, id: &str, kind: &str) {
         g.command(
@@ -1110,7 +1309,7 @@ mod tests {
         assert_eq!(g.offset("a"), 700);
     }
     #[test]
-    fn timeout_auto_action_and_stale_action_rejected() {
+    fn present_players_are_never_hurried_and_stale_actions_are_rejected() {
         let mut g = setup("blackjack");
         g.command("a", "a", &json!({"epoch":g.epoch,"op":"start"}), 0)
             .unwrap();
@@ -1121,9 +1320,11 @@ mod tests {
             s.stood = false;
         }
         t.turn = 0;
-        t.deadline = Instant::now();
         let revision = g.revision;
-        g.tick();
+        g.tick(&|_| false);
+        assert!(!g.table.as_ref().unwrap().seats[0].stood);
+        assert_eq!(g.revision, revision);
+        g.tick(&|id| id == "a");
         assert!(g.table.as_ref().unwrap().seats[0].stood);
         assert!(g.revision > revision);
         assert!(g
@@ -1144,8 +1345,10 @@ mod tests {
             if g.table.as_ref().unwrap().phase == "finished" {
                 break;
             }
-            g.table.as_mut().unwrap().deadline = Instant::now();
-            g.tick();
+            let t = g.table.as_mut().unwrap();
+            t.deadline = Instant::now();
+            t.paced = Instant::now();
+            g.tick(&|_| true);
             assert_eq!(
                 g.table
                     .as_ref()

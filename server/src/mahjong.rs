@@ -1,10 +1,8 @@
 //! Four-player Sichuan blood battle. Entry/prizes are fixed; tile actions never
 //! spend wallet points. Physical tile IDs keep concealed information private.
 use serde_json::{json, Value};
-use std::time::{Duration, Instant};
 
 const PRIZES: [u64; 4] = [700, 550, 350, 0];
-const TURN: Duration = Duration::from_secs(30);
 #[derive(Clone)]
 struct Meld {
     tiles: Vec<u8>,
@@ -36,7 +34,6 @@ pub struct Mahjong {
     ranks: Vec<Vec<usize>>,
     win_tiles: [Option<u8>; 4],
     pub turn: usize,
-    pub deadline: Instant,
     pub note: String,
     pub finished: bool,
     phase: &'static str,
@@ -144,7 +141,6 @@ impl Mahjong {
             ranks: vec![],
             win_tiles: [None; 4],
             turn: 0,
-            deadline: Instant::now() + TURN,
             note: "先选三张同花色的牌，交换给下家，然后定缺".into(),
             finished: false,
             phase: "exchange",
@@ -163,9 +159,6 @@ impl Mahjong {
             .map(|d| (i + d) % 4)
             .find(|j| self.active(*j))
             .unwrap_or(i)
-    }
-    fn reset(&mut self) {
-        self.deadline = Instant::now() + TURN;
     }
     fn can_hu(&self, i: usize, tile: Option<u8>) -> bool {
         if !self.active(i) {
@@ -280,7 +273,6 @@ impl Mahjong {
                     .collect::<Vec<_>>()
             });
         json!({"phase":self.phase,"wall":self.wall.len(),"turn":self.turn,"actions":opts,"gangs":gangs,"note":self.note,"finished":self.finished,
-            "remainingMs":self.deadline.saturating_duration_since(Instant::now()).as_millis()as u64,
             "claim":self.response.as_ref().map(|r|json!({"source":r.source,"tile":r.tile,"rob":r.rob.is_some()})),
             "players":(0..4).map(|i|json!({"hand":if viewer==Some(i)||self.won[i]||self.finished{Some(&self.hands[i])}else{None},"count":self.hands[i].len(),"missing":self.missing[i],"won":self.won[i],"left":self.left[i],"exchanged":self.exchanged[i],"river":self.rivers[i],"winTile":self.win_tiles[i],"payout":self.payouts[i],"rank":self.ranks.iter().position(|g|g.contains(&i)).map(|g|1+self.ranks[..g].iter().map(|g|g.len()).sum::<usize>()),"melds":self.melds[i].iter().map(|m|json!({"count":m.tiles.len(),"concealed":m.concealed,"tiles":if m.concealed&&viewer!=Some(i)&&!self.finished{None}else{Some(&m.tiles)}})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
@@ -331,7 +323,6 @@ impl Mahjong {
                     }
                     self.phase = "que";
                     self.note = "请选择本局要打缺的花色：万、筒或条".into();
-                    self.reset();
                 }
             }
             "que" => {
@@ -349,8 +340,6 @@ impl Mahjong {
                     self.note = "定缺完成，庄家先出牌；缺门的牌必须先打".into();
                     if self.turn != 0 {
                         self.draw(self.turn, false);
-                    } else {
-                        self.reset();
                     }
                 }
             }
@@ -465,7 +454,6 @@ impl Mahjong {
             "等待碰、杠、胡回应；胡牌优先，支持一炮多响"
         }
         .into();
-        self.deadline = Instant::now() + Duration::from_secs(12);
         if complete {
             self.resolve();
         }
@@ -530,7 +518,6 @@ impl Mahjong {
             } else {
                 self.phase = "discard";
                 self.note = "碰牌后请出一张手牌".into();
-                self.reset();
             }
             return;
         }
@@ -556,7 +543,6 @@ impl Mahjong {
             "轮到当前玩家出牌；可胡牌时点胡"
         }
         .into();
-        self.reset();
     }
     fn record_wins(&mut self, winners: Vec<usize>) {
         for i in &winners {
@@ -659,15 +645,12 @@ impl Mahjong {
                     self.hands[(j + 1) % 4].sort();
                 }
                 self.phase = "que";
-                self.reset();
             }
             if self.phase == "que" && self.missing.iter().all(Option::is_some) {
                 self.phase = "discard";
                 self.turn = if self.active(0) { 0 } else { self.next(0) };
                 if self.turn != 0 {
                     self.draw(self.turn, false);
-                } else {
-                    self.reset();
                 }
             }
         } else if self.phase == "response" {
@@ -685,71 +668,50 @@ impl Mahjong {
             self.draw(self.next(i), false);
         }
     }
-    pub fn tick(&mut self) -> bool {
-        if self.finished || Instant::now() < self.deadline {
-            return false;
-        }
-        match self.phase {
-            "exchange" => {
-                for i in 0..4 {
-                    if !self.exchanged[i] {
-                        let s = (0..3)
-                            .max_by_key(|s| {
-                                self.hands[i].iter().filter(|t| suit(**t) == *s).count()
-                            })
-                            .unwrap();
-                        let a: Vec<u8> = self.hands[i]
-                            .iter()
-                            .copied()
-                            .filter(|t| suit(*t) == s)
-                            .take(3)
-                            .collect();
-                        let _ = self.command(i, &json!({"op":"exchange","tiles":a}));
-                    }
-                }
+    /// Plays for seats whose players are `away` (offline too long): every pending
+    /// exchange / missing-suit choice, claim response or discard. False if none was due.
+    pub fn auto(&mut self, away: &dyn Fn(usize) -> bool) -> bool {
+        let mut acted = false;
+        for i in 0..4 {
+            if self.finished || !self.can_act(i) || !away(i) {
+                continue;
             }
-            "que" => {
-                for i in 0..4 {
-                    if self.missing[i].is_none() {
-                        let s = (0..3)
-                            .min_by_key(|s| {
-                                self.hands[i].iter().filter(|t| suit(**t) == *s).count()
-                            })
-                            .unwrap();
-                        let _ = self.command(i, &json!({"op":"que","suit":s}));
-                    }
+            let msg = match self.phase {
+                "exchange" => {
+                    let s = (0..3)
+                        .max_by_key(|s| self.hands[i].iter().filter(|t| suit(**t) == *s).count())
+                        .unwrap();
+                    let tiles: Vec<u8> = self.hands[i]
+                        .iter()
+                        .copied()
+                        .filter(|t| suit(*t) == s)
+                        .take(3)
+                        .collect();
+                    json!({"op":"exchange","tiles":tiles})
                 }
-            }
-            "response" => {
-                let mut r = self.response.take().unwrap();
-                for i in 0..4 {
-                    if r.choices[i].is_none() {
-                        r.choices[i] = Some(if self.options(i, &r).contains(&"hu") {
-                            Claim::Hu
-                        } else {
-                            Claim::Pass
-                        });
-                    }
+                "que" => {
+                    let s = (0..3)
+                        .min_by_key(|s| self.hands[i].iter().filter(|t| suit(**t) == *s).count())
+                        .unwrap();
+                    json!({"op":"que","suit":s})
                 }
-                self.response = Some(r);
-                self.resolve();
-            }
-            "discard" => {
-                let i = self.turn;
-                if self.can_hu(i, None) {
-                    let _ = self.command(i, &json!({"op":"hu"}));
-                } else {
+                "response" => {
+                    let hu = self.options(i, self.response.as_ref().unwrap()).contains(&"hu");
+                    json!({"op":if hu { "hu" } else { "pass" }})
+                }
+                _ if self.can_hu(i, None) => json!({"op":"hu"}),
+                _ => {
                     let t = self.hands[i]
                         .iter()
                         .copied()
                         .find(|t| Some(suit(*t)) == self.missing[i])
                         .unwrap_or(*self.hands[i].last().unwrap());
-                    let _ = self.command(i, &json!({"op":"discard","tile":t}));
+                    json!({"op":"discard","tile":t})
                 }
-            }
-            _ => {}
+            };
+            acted |= self.command(i, &msg).is_ok();
         }
-        true
+        acted
     }
 }
 
@@ -832,12 +794,19 @@ mod tests {
             if m.finished {
                 break;
             }
-            m.deadline = Instant::now();
-            m.tick();
+            m.auto(&|_| true);
         }
         assert!(m.finished);
         assert_eq!(m.payouts[0], 0);
         assert_eq!(m.payouts.iter().sum::<u64>(), 1600);
+    }
+    #[test]
+    fn stand_in_only_plays_for_away_seats() {
+        let mut m = Mahjong::new();
+        assert!(!m.auto(&|_| false));
+        assert!(m.auto(&|i| i == 2));
+        assert!(m.exchanged[2] && !m.exchanged[0]);
+        assert_eq!(m.phase, "exchange");
     }
     #[test]
     fn winning_shapes_require_missing_suit() {
@@ -877,8 +846,7 @@ mod tests {
                 if m.finished {
                     break;
                 }
-                m.deadline = Instant::now();
-                m.tick();
+                assert!(m.auto(&|_| true));
                 let mut all = m.wall.clone();
                 for h in &m.hands {
                     all.extend(h);

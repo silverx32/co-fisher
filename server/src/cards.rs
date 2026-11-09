@@ -3,20 +3,22 @@
 pub fn deck(jokers: bool) -> Vec<u8> {
     let mut cards: Vec<u8> = (0..if jokers { 54 } else { 52 }).collect();
     for i in (1..cards.len()).rev() {
-        // Rejection sampling avoids modulo bias.
-        let bound = (i + 1) as u32;
-        let limit = u32::MAX - u32::MAX % bound;
-        let j = loop {
-            let mut b = [0; 4];
-            getrandom::fill(&mut b).expect("OS random source");
-            let n = u32::from_le_bytes(b);
-            if n < limit {
-                break (n % bound) as usize;
-            }
-        };
-        cards.swap(i, j);
+        cards.swap(i, below(i as u32 + 1) as usize);
     }
     cards
+}
+
+/// Uniform 0..bound from the OS; rejection sampling avoids modulo bias.
+pub fn below(bound: u32) -> u32 {
+    let limit = u32::MAX - u32::MAX % bound;
+    loop {
+        let mut b = [0; 4];
+        getrandom::fill(&mut b).expect("OS random source");
+        let n = u32::from_le_bytes(b);
+        if n < limit {
+            return n % bound;
+        }
+    }
 }
 
 pub fn token() -> String {

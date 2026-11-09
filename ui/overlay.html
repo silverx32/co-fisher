@@ -26,10 +26,24 @@
     padding: 10px 26px; border-radius: 30px; white-space: nowrap; animation: banner 4s forwards;
   }
   @keyframes banner { 0% { opacity: 0; transform: translateY(-20px); } 10%, 80% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+  /* A table game is waiting on me: top-right corner, in the card table's colours. */
+  #notices { position: absolute; top: 18px; right: 18px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; z-index: 6; }
+  .turn-notice {
+    min-width: 220px; max-width: 320px; padding: 11px 18px 10px; border-radius: 12px; background: rgba(23, 74, 64, .95);
+    border: 2px solid #c5b786; color: #f5f1dc; box-shadow: 0 8px 24px rgba(0,0,0,.3); font-family: "Microsoft YaHei UI", sans-serif;
+    animation: notice 5s forwards;
+  }
+  .turn-notice b { display: block; font-size: 20px; color: #ead6a0; letter-spacing: 1px; }
+  .turn-notice span { display: block; font-size: 14px; margin-top: 3px; }
+  .turn-notice small { display: block; font-size: 11px; color: #bdcfbb; margin-top: 4px; }
+  @keyframes notice { 0% { opacity: 0; transform: translateX(40px); } 8%, 86% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateX(40px); } }
+  @media (prefers-reduced-motion: reduce) { .turn-notice { animation: notice-fade 5s forwards; } }
+  @keyframes notice-fade { 0%, 100% { opacity: 0; } 8%, 86% { opacity: 1; } }
 </style>
 </head>
 <body>
 <div id="banners"></div>
+<div id="notices"></div>
 <script src="api.js"></script>
 <script src="overlay.js"></script>
 </body>

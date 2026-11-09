@@ -348,7 +348,23 @@ function fireworks({ fromName, mine, title }) {
   requestAnimationFrame(frame);
 }
 
-const EFFECTS = { rain, firework: fireworks };
+// A table game is waiting on me: a card in the top-right corner (overlay.html's #notices).
+const NOTICE_MS = 5000;
+function turnNotice({ title, text }) {
+  const n = document.createElement('div');
+  n.className = 'turn-notice';
+  const head = document.createElement('b');
+  head.textContent = `🎲 ${title}`;
+  const where = document.createElement('span');
+  where.textContent = text;
+  const hint = document.createElement('small');
+  hint.textContent = '回到桌宠的牌桌里操作，不限时';
+  n.append(head, where, hint);
+  document.getElementById('notices').append(n);
+  setTimeout(() => { n.remove(); done(); }, NOTICE_MS);
+}
+
+const EFFECTS = { rain, firework: fireworks, turn: turnNotice };
 
 api.on('effect', (e) => {
   seen += 1;
